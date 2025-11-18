@@ -41,7 +41,10 @@ func NewAPIServer(masterNode types.MasterNodeInterface, port int) *APIServer {
 
 // Start begins listening on API port
 func (a *APIServer) Start() error {
-	log.Printf("API server starting on port %d", a.port)
+	log.Printf("🚀 API Server starting on port %d", a.port)
+	log.Printf("📡 Endpoints available:")
+	log.Printf("   • Health:    http://localhost:%d/health", a.port)
+	log.Printf("   • Metrics:   http://localhost:%d/metrics", a.port)
 
 	if err := a.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("API server failed: %w", err)
