@@ -99,6 +99,7 @@ func NewNode(ctx context.Context, config NodeConfig) (*Node, error) {
 	h.SetStreamHandler(libp2pprotocol.ID(config.ProtocolID+"/bitswap"), node.handleBitSwapStream)
 	h.SetStreamHandler(libp2pprotocol.ID(config.ProtocolID+"/storage"), node.handleStorageStream)
 	h.SetStreamHandler(libp2pprotocol.ID(config.ProtocolID+"/discovery"), node.handleDiscoveryStream)
+	h.SetStreamHandler(libp2pprotocol.ID(config.ProtocolID+"/proofofstorage"), node.handleProofOfStorageStream)
 
 	// Set connection handlers
 	h.Network().Notify(&network.NotifyBundle{
@@ -216,6 +217,27 @@ func (n *Node) handleDiscoveryStream(s network.Stream) {
 
 	if err := n.handler.HandleDiscoveryMessage(s, raw); err != nil {
 		log.Printf("Error handling discovery message: %v", err)
+	}
+}
+
+// handleProofOfStorageStream handles proof of storage protocol streams
+func (n *Node) handleProofOfStorageStream(s network.Stream) {
+	defer s.Close()
+	var raw json.RawMessage
+	if err := json.NewDecoder(s).Decode(&raw); err != nil {
+		data, err2 := io.ReadAll(s)
+		if err2 != nil {
+			log.Printf("Error reading proof of storage stream: %v", err2)
+			return
+		}
+		if err := n.handler.HandleProofOfStorageMessage(s, data); err != nil {
+			log.Printf("Error handling proof of storage message: %v", err)
+		}
+		return
+	}
+
+	if err := n.handler.HandleProofOfStorageMessage(s, raw); err != nil {
+		log.Printf("Error handling proof of storage message: %v", err)
 	}
 }
 

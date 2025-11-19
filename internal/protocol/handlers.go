@@ -35,7 +35,7 @@ func (h *MessageHandler) HandleDiscoveryMessage(stream network.Stream, messageDa
 	case types.TypeRegistrationRequest:
 		return h.handleRegistrationRequest(stream, messageData)
 	case types.TypeProofOfStorage:
-		return h.handleProofOfStorage(stream, messageData)
+		return h.HandleProofOfStorageMessage(stream, messageData)
 	case types.TypeFileLocationQuery:
 		return h.handleFileLocationQuery(stream, messageData)
 	case types.TypeChallengeResponse:
@@ -90,7 +90,7 @@ func (h *MessageHandler) handleRegistrationRequest(stream network.Stream, data [
 
 	log.Printf("Processing registration request from farmer %s", req.PeerID)
 
-	// Call the master node's registration handler
+	// Call the master node's registration handler with the full request
 	if err := h.masterNode.HandleIncomingRegistration(req.PeerID, req); err != nil {
 		// Send error response
 		response := types.RegistrationResponse{
@@ -122,23 +122,23 @@ func (h *MessageHandler) handleRegistrationRequest(stream network.Stream, data [
 }
 
 // handleProofOfStorage processes storage proofs from farmers
-func (h *MessageHandler) handleProofOfStorage(stream network.Stream, data []byte) error {
+func (h *MessageHandler) HandleProofOfStorageMessage(stream network.Stream, data []byte) error {
 	var proofMsg types.ProofOfStorage
 	if err := json.Unmarshal(data, &proofMsg); err != nil {
 		return fmt.Errorf("failed to unmarshal proof of storage: %w", err)
 	}
 
-	log.Printf("Received Proof of Storage from %s - Storage: %d/%d, Chunks: %d, Proofs: %d", 
-		proofMsg.PeerID, proofMsg.UsedStorage, proofMsg.AvailableStorage, 
+	log.Printf("Received Proof of Storage from %s - Storage: %d/%d, Chunks: %d, Proofs: %d",
+		proofMsg.PeerID, proofMsg.UsedStorage, proofMsg.AvailableStorage,
 		proofMsg.ChunksStored, len(proofMsg.StorageProofs))
 
 	// Validate storage proofs
 	validProofs := h.validateStorageProofs(proofMsg.StorageProofs)
-	
+
 	// Calculate reliability score based on proofs
 	reliability := h.calculateReliability(validProofs, proofMsg.Metrics)
 
-	log.Printf("Farmer %s reliability score: %.2f (%d/%d valid proofs)", 
+	log.Printf("Farmer %s reliability score: %.2f (%d/%d valid proofs)",
 		proofMsg.PeerID, reliability, len(validProofs), len(proofMsg.StorageProofs))
 
 	response := types.Message{
@@ -159,7 +159,7 @@ func (h *MessageHandler) handleChallengeResponse(stream network.Stream, data []b
 		return fmt.Errorf("failed to unmarshal challenge response: %w", err)
 	}
 
-	log.Printf("Received challenge response for ID: %s from %s with %d proofs", 
+	log.Printf("Received challenge response for ID: %s from %s with %d proofs",
 		challengeResp.ChallengeID, challengeResp.PeerID, len(challengeResp.Proofs))
 
 	// Validate challenge response timing
@@ -170,7 +170,7 @@ func (h *MessageHandler) handleChallengeResponse(stream network.Stream, data []b
 
 	// Validate the provided proofs
 	valid := h.validateChallengeProofs(challengeResp.Proofs, challengeResp.ChallengeID)
-	
+
 	log.Printf("Challenge %s validation result: %t", challengeResp.ChallengeID, valid)
 
 	response := types.Message{
@@ -215,7 +215,7 @@ func (h *MessageHandler) handleStorageOffer(stream network.Stream, data []byte) 
 		return fmt.Errorf("failed to unmarshal storage offer: %w", err)
 	}
 
-	log.Printf("Storage offer for chunk %s from %s - Size: %d, Duration: %d", 
+	log.Printf("Storage offer for chunk %s from %s - Size: %d, Duration: %d",
 		offer.ChunkHash, offer.PeerID, offer.Size, offer.Duration)
 
 	response := types.Message{
@@ -267,7 +267,7 @@ func (h *MessageHandler) handleChunkResponse(stream network.Stream, data []byte)
 // validateStorageProofs validates cryptographic storage proofs
 func (h *MessageHandler) validateStorageProofs(proofs []types.StorageProof) []types.StorageProof {
 	var validProofs []types.StorageProof
-	
+
 	for _, proof := range proofs {
 		if h.validateSingleProof(proof) {
 			validProofs = append(validProofs, proof)
@@ -275,7 +275,7 @@ func (h *MessageHandler) validateStorageProofs(proofs []types.StorageProof) []ty
 			log.Printf("Invalid proof for chunk %s", proof.ChunkHash)
 		}
 	}
-	
+
 	return validProofs
 }
 
@@ -295,13 +295,13 @@ func (h *MessageHandler) calculateReliability(validProofs []types.StorageProof, 
 	if len(validProofs) == 0 {
 		return 0.0
 	}
-	
+
 	// Base reliability from proof validation
 	proofScore := float64(len(validProofs)) / float64(len(validProofs)+1)
-	
+
 	// Combine with other metrics
 	reliability := (proofScore + metrics.SuccessRate + metrics.StorageHealth) / 3.0
-	
+
 	return reliability
 }
 

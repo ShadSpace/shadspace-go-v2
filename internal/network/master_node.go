@@ -32,6 +32,9 @@ type MasterNode struct {
 
 	// Network metrics - using types.NetworkMetrics
 	metrics *types.NetworkMetrics
+
+	//  Enhanced farmer trackinf
+	farmerMetrics map[peer.ID]*types.FarmerEnhancedMetrics
 }
 
 // Ensure MasterNode implements the interface
@@ -51,12 +54,13 @@ func NewMasterNode(ctx context.Context, config NodeConfig) (*MasterNode, error) 
 	}
 
 	master := &MasterNode{
-		node:      node,
-		ctx:       masterCtx,
-		cancel:    cancel,
-		farmers:   make(map[peer.ID]*types.FarmerInfo),
-		fileIndex: make(map[string][]peer.ID),
-		metrics:   &types.NetworkMetrics{},
+		node:          node,
+		ctx:           masterCtx,
+		cancel:        cancel,
+		farmers:       make(map[peer.ID]*types.FarmerInfo),
+		fileIndex:     make(map[string][]peer.ID),
+		metrics:       &types.NetworkMetrics{},
+		farmerMetrics: make(map[peer.ID]*types.FarmerEnhancedMetrics),
 	}
 
 	node.SetHandler(protocol.NewMessageHandler(master))
@@ -90,17 +94,32 @@ func (mn *MasterNode) HandleIncomingRegistration(peerID peer.ID, req types.Regis
 		return fmt.Errorf("invalid storage capacity")
 	}
 
-	// Register the farmer
+	// Register the farmer with enhanced information
 	addresses := req.Addresses
 	if len(addresses) == 0 {
 		// If no addresses provided, use the connection address
 		if conns := mn.node.Host.Network().ConnsToPeer(peerID); len(conns) > 0 {
-			// FIXED: Added missing slash in p2p address
 			addresses = []string{conns[0].RemoteMultiaddr().String() + "/p2p/" + peerID.String()}
 		}
 	}
 
-	if err := mn.RegisterFarmer(peerID, req.StorageCapacity, addresses); err != nil {
+	// Use default values if not provided in request
+	location := req.Location
+	if location == "" {
+		location = "Unknown"
+	}
+
+	nodeName := req.NodeName
+	if nodeName == "" {
+		nodeName = "Node-" + peerID.String()[:8] // Generate default node name
+	}
+
+	version := req.Version
+	if version == "" {
+		version = "2.1.4" // Default version
+	}
+
+	if err := mn.RegisterFarmer(peerID, req.StorageCapacity, addresses, location, nodeName, version); err != nil {
 		return fmt.Errorf("failed to register farmer: %w", err)
 	}
 
@@ -109,7 +128,8 @@ func (mn *MasterNode) HandleIncomingRegistration(peerID peer.ID, req types.Regis
 	mn.metrics.ActiveFarmers++
 	mn.metrics.TotalStorage += req.StorageCapacity
 
-	log.Printf("Farmer %s registered with %d MB capacity", peerID, req.StorageCapacity/(1024*1024))
+	log.Printf("Farmer %s registered with %d MB capacity in %s",
+		peerID, req.StorageCapacity/(1024*1024), location)
 
 	return nil
 }
@@ -126,6 +146,13 @@ func (mn *MasterNode) RemoveInactiveFarmers() {
 		if now.Sub(farmer.LastSeen) > inactiveThreshold {
 			farmer.IsActive = false
 			mn.metrics.ActiveFarmers--
+
+			// Update farmer metrics tags
+			if metrics, exists := mn.farmerMetrics[peerID]; exists {
+				metrics.Tags = updateTags(metrics.Tags, "offline", true)
+				metrics.Tags = updateTags(metrics.Tags, "online", false)
+			}
+
 			log.Printf("Marked farmer %s as inactive", peerID)
 		}
 	}
@@ -145,14 +172,109 @@ func (mn *MasterNode) HandleProofOfStorage(peerID peer.ID, proof types.ProofOfSt
 	// Update farmer information
 	farmer.UsedStorage = proof.UsedStorage
 	farmer.LastSeen = time.Now()
-	farmer.Reliability = proof.Metrics.Reliability
 
-	// Update metrics (note: this should aggregate across all farmers)
-	// For now, we'll just track the latest value
-	mn.metrics.UsedStorage = proof.UsedStorage
+	// Calculate reliablity based on the proof data
+	reliability := mn.calculateReliability(proof)
+	farmer.Reliability = reliability
+	farmer.LastSeen = time.Now()
 
-	log.Printf("Updated farmer %s: %d/%d MB used, reliability: %.2f",
-		peerID, proof.UsedStorage/(1024*1024), farmer.StorageCapacity/(1024*1024), proof.Metrics.Reliability)
+	if metrics, exists := mn.farmerMetrics[peerID]; exists {
+		metrics.Location = proof.Location
+		metrics.Latency = proof.Latency
+		metrics.Uptime = proof.Uptime
+		metrics.LastSync = time.Now()
+		metrics.Tags = mn.generateFarmerTags(farmer, metrics)
+	} else {
+		// Create new metrics entry
+		mn.farmerMetrics[peerID] = &types.FarmerEnhancedMetrics{
+			Location: proof.Location,
+			Latency:  proof.Latency,
+			Uptime:   proof.Uptime,
+			LastSync: time.Now(),
+			Tags:     mn.generateFarmerTags(farmer, nil),
+		}
+	}
+	// Update network metrics
+	mn.updateNetworkMetrics()
+
+	log.Printf("Updated farmer %s: %d/%d MB used, reliability: %.2f, location: %s",
+		peerID, proof.UsedStorage/(1024*1024), farmer.StorageCapacity/(1024*1024),
+		reliability, proof.Location)
+}
+
+// calculateReliability calculates farmer reliability based on proof data
+func (mn *MasterNode) calculateReliability(proof types.ProofOfStorage) float64 {
+	// Base reliability from uptime (convert seconds to percentage)
+	uptimeScore := proof.Uptime / (24 * 60 * 60) // Convert seconds to days, assume 100% if > 1 day
+	if uptimeScore > 1.0 {
+		uptimeScore = 1.0
+	}
+
+	// Latency score (lower latency is better)
+	latencyScore := 1.0
+	if proof.Latency > 0 {
+		latencyScore = 1.0 - (float64(proof.Latency) / 1000.0) // Max 1000ms latency
+		if latencyScore < 0 {
+			latencyScore = 0
+		}
+	}
+
+	// Storage health (based on usage percentage)
+	storageHealth := 1.0
+	if proof.AvailableStorage > 0 {
+		usagePercent := float64(proof.UsedStorage) / float64(proof.AvailableStorage)
+		// Ideal usage is between 20-80%
+		if usagePercent < 0.2 || usagePercent > 0.8 {
+			storageHealth = 0.8
+		}
+	}
+
+	// Combine scores
+	reliability := (uptimeScore + latencyScore + storageHealth) / 3.0
+	return reliability
+}
+
+// generateFarmerTags generates tags for frontend display
+func (mn *MasterNode) generateFarmerTags(farmer *types.FarmerInfo, metrics *types.FarmerEnhancedMetrics) []string {
+	tags := []string{"farmer"}
+
+	// Status tags
+	if farmer.IsActive {
+		tags = append(tags, "online")
+	} else {
+		tags = append(tags, "offline")
+	}
+
+	// Reliability tags
+	if farmer.Reliability > 0.8 {
+		tags = append(tags, "high-performance")
+	} else if farmer.Reliability < 0.5 {
+		tags = append(tags, "degraded")
+	}
+
+	// Storage usage tags
+	usagePercent := float64(farmer.UsedStorage) / float64(farmer.StorageCapacity)
+	if usagePercent > 0.8 {
+		tags = append(tags, "high-usage")
+	} else if usagePercent < 0.2 {
+		tags = append(tags, "low-usage")
+	}
+
+	// Location-based tags if available
+	if metrics != nil && metrics.Location != "" && metrics.Location != "unknown" {
+		tags = append(tags, "geo-enabled")
+	}
+
+	// Latency tags
+	if metrics != nil {
+		if metrics.Latency > 500 {
+			tags = append(tags, "high-latency")
+		} else if metrics.Latency < 50 {
+			tags = append(tags, "low-latency")
+		}
+	}
+
+	return tags
 }
 
 // HandleStorageOffer processes storage offers from farmers (implements protocol.MasterNodeHandler)
@@ -221,6 +343,28 @@ func (mn *MasterNode) updateMetrics() {
 	mn.metrics.UsedStorage = usedStorage
 }
 
+// updateNetworkMetrics updates comprehensive network metrics
+func (mn *MasterNode) updateNetworkMetrics() {
+	mn.farmersMu.RLock()
+	defer mn.farmersMu.RUnlock()
+
+	activeCount := 0
+	totalStorage := uint64(0)
+	usedStorage := uint64(0)
+
+	for _, farmer := range mn.farmers {
+		if farmer.IsActive {
+			activeCount++
+			totalStorage += farmer.StorageCapacity
+			usedStorage += farmer.UsedStorage
+		}
+	}
+
+	mn.metrics.ActiveFarmers = activeCount
+	mn.metrics.TotalStorage = totalStorage
+	mn.metrics.UsedStorage = usedStorage
+}
+
 // GetHost returns the underlying libp2p host
 func (mn *MasterNode) GetHost() host.Host {
 	return mn.node.Host
@@ -245,8 +389,33 @@ func (mn *MasterNode) GetFarmers() []*types.FarmerInfo {
 	return activeFarmers
 }
 
+// GetEnhancedFarmers returns farmers with enhanced metrics for frontend
+func (mn *MasterNode) GetEnhancedFarmers() []*types.FarmerEnhancedMetrics {
+	mn.farmersMu.RLock()
+	defer mn.farmersMu.RUnlock()
+
+	var enhancedFarmers []*types.FarmerEnhancedMetrics
+	for peerID, farmer := range mn.farmers {
+		if farmer.IsActive {
+			if metrics, exists := mn.farmerMetrics[peerID]; exists {
+				enhancedFarmers = append(enhancedFarmers, metrics)
+			} else {
+				// Create basic metrics if none exist
+				enhancedFarmers = append(enhancedFarmers, &types.FarmerEnhancedMetrics{
+					Location: "Unknown",
+					NodeName: "Node-" + peerID.String()[:8],
+					Version:  "2.1.4",
+					Tags:     []string{"farmer", "online"},
+					LastSync: farmer.LastSeen,
+				})
+			}
+		}
+	}
+	return enhancedFarmers
+}
+
 // RegisterFarmer registers a new farmer node
-func (mn *MasterNode) RegisterFarmer(peerID peer.ID, capacity uint64, addresses []string) error {
+func (mn *MasterNode) RegisterFarmer(peerID peer.ID, capacity uint64, addresses []string, location, nodeName, version string) error {
 	mn.farmersMu.Lock()
 	defer mn.farmersMu.Unlock()
 
@@ -261,8 +430,43 @@ func (mn *MasterNode) RegisterFarmer(peerID peer.ID, capacity uint64, addresses 
 	}
 
 	mn.farmers[peerID] = farmer
+
+	// Initialize enhanced metrics
+	mn.farmerMetrics[peerID] = &types.FarmerEnhancedMetrics{
+		Location:  location,
+		NodeName:  nodeName,
+		Version:   version,
+		Latency:   0,
+		Uptime:    0,
+		IsPrimary: false,
+		Tags:      []string{"farmer", "online", "new"},
+		LastSync:  time.Now(),
+	}
+
 	log.Printf("Registered farmer: %s", peerID)
 	return nil
+}
+
+// updateTags helper function to update tags
+func updateTags(tags []string, tag string, add bool) []string {
+	if add {
+		// Add tag if not present
+		for _, t := range tags {
+			if t == tag {
+				return tags
+			}
+		}
+		return append(tags, tag)
+	} else {
+		// Remove tag if present
+		newTags := []string{}
+		for _, t := range tags {
+			if t != tag {
+				newTags = append(newTags, t)
+			}
+		}
+		return newTags
+	}
 }
 
 // Shutdown gracefully shuts down the master node

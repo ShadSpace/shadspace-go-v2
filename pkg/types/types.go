@@ -12,6 +12,18 @@ type MasterNodeInterface interface {
 	GetHost() host.Host
 	GetMetrics() *NetworkMetrics
 	GetFarmers() []*FarmerInfo
+	GetEnhancedFarmers() []*FarmerEnhancedMetrics
+}
+
+type FarmerEnhancedMetrics struct {
+	Location  string    `json:"location"`
+	NodeName  string    `json:"node_name"`
+	Version   string    `json:"version"`
+	Latency   int       `json:"latency"`
+	Uptime    float64   `json:"uptime"`
+	IsPrimary bool      `json:"is_primary"`
+	Tags      []string  `json:"tags"`
+	LastSync  time.Time `json:"last_sync"`
 }
 
 // FarmerInfo contains information about a farmer node
@@ -23,6 +35,7 @@ type FarmerInfo struct {
 	LastSeen        time.Time `json:"last_seen"`
 	IsActive        bool      `json:"is_active"`
 	Addresses       []string  `json:"addresses"`
+	Location        string    `json:"location,omitempty"`
 }
 
 // NetworkMetrics tracks network-wide metrics
@@ -66,6 +79,9 @@ type RegistrationRequest struct {
 	UsedStorage     uint64   `json:"used_storage"`
 	Addresses       []string `json:"addresses"`
 	ProtocolVersion string   `json:"protocol_version"`
+	Location        string   `json:"location,omitempty"`
+	NodeName        string   `json:"node_name,omitempty"`
+	Version         string   `json:"version,omitempty"`
 }
 
 type RegistrationResponse struct {
@@ -80,9 +96,11 @@ type ProofOfStorage struct {
 	UsedStorage      uint64         `json:"used_storage"`
 	AvailableStorage uint64         `json:"available_storage"`
 	ChunksStored     int            `json:"chunks_stored"`
-	Uptime           int64          `json:"uptime_seconds"`
+	Uptime           float64        `json:"uptime_seconds"`
 	StorageProofs    []StorageProof `json:"storage_proofs"`
 	Metrics          FarmerMetrics  `json:"metrics"`
+	Location         string         `json:"location,omitempty"`
+	Latency          int            `json:"latency_ms,omitempty"`
 }
 
 type StorageProof struct {

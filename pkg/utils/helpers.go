@@ -71,3 +71,26 @@ func GetPeerIDFromKey(privKey crypto.PrivKey) (string, error) {
 
 	return peerID.String(), nil
 }
+
+func GenerateNodeName(peerID peer.ID) string {
+	// Use last 8 characters of peer ID for name
+	idStr := peerID.String()
+	if len(idStr) > 8 {
+		return "Node-" + idStr[len(idStr)-8:]
+	}
+	return "Node-" + idStr
+}
+
+func Contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
+}
+
+// Helper function to round to 2 decimal places
+func RoundToTwoDecimals(num float64) float64 {
+	return float64(int(num*100)) / 100
+}

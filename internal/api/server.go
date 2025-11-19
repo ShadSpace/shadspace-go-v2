@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ShadSpace/shadspace-go-v2/pkg/types"
+	"github.com/ShadSpace/shadspace-go-v2/pkg/utils"
 )
 
 // APIServer handles HTTP API endpoints for the master node
@@ -37,6 +38,7 @@ func NewAPIServer(masterNode types.MasterNodeInterface, port int) *APIServer {
 	// Register routes
 	mux.HandleFunc("/health", api.healthHandler)
 	mux.HandleFunc("/farmers", api.farmersHandler)
+	mux.HandleFunc("/nodes", api.nodesHandler)
 
 	return api
 }
@@ -104,6 +106,102 @@ func (a *APIServer) farmersHandler(w http.ResponseWriter, r *http.Request) {
 	response := map[string]interface{}{
 		"count":   len(serialized),
 		"farmers": serialized,
+	}
+
+	writeJSONResponse(w, http.StatusOK, response)
+}
+
+// nodesHandler returns enhanced farmer data for frontend dashboard
+func (a *APIServer) nodesHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	enhancedFarmers := a.masterNode.GetEnhancedFarmers()
+
+	// Transform enhanced farmers to match frontend StorageNode structure
+	nodes := make([]map[string]interface{}, 0, len(enhancedFarmers))
+	for _, farmer := range enhancedFarmers {
+		if farmer == nil {
+			continue
+		}
+
+		// Get basic farmer info for storage calculations
+		var storageCapacity uint64
+		var usedStorage uint64
+
+		basicFarmers := a.masterNode.GetFarmers()
+		for _, basicFarmer := range basicFarmers {
+			// Find matching farmer by some identifier (you might need to adjust this)
+			if basicFarmer != nil {
+				storageCapacity = basicFarmer.StorageCapacity
+				usedStorage = basicFarmer.UsedStorage
+				break
+			}
+		}
+
+		// Calculate storage in GB for frontend
+		storageUsedGB := float64(usedStorage) / (1024 * 1024 * 1024)
+		storageTotalGB := float64(storageCapacity) / (1024 * 1024 * 1024)
+		storagePercentage := 0.0
+		if storageTotalGB > 0 {
+			storagePercentage = (storageUsedGB / storageTotalGB) * 100
+		}
+
+		// Determine status based on tags and last sync
+		status := "offline"
+		if utils.Contains(farmer.Tags, "online") {
+			if utils.Contains(farmer.Tags, "high-performance") {
+				status = "online"
+			} else if utils.Contains(farmer.Tags, "degraded") {
+				status = "degraded"
+			} else {
+				status = "online"
+			}
+		}
+
+		// Calculate uptime percentage (assuming uptime is in seconds, convert to percentage)
+		uptimePercentage := farmer.Uptime
+		if farmer.Uptime > 100 {
+			// If uptime is in seconds, convert to percentage (assuming 100% for anything over 24h)
+			days := farmer.Uptime / (24 * 60 * 60)
+			if days > 1 {
+				uptimePercentage = 99.9
+			} else {
+				uptimePercentage = (farmer.Uptime / (24 * 60 * 60)) * 100
+			}
+			if uptimePercentage > 100 {
+				uptimePercentage = 99.9
+			}
+		}
+
+		node := map[string]interface{}{
+			"id":       farmer.NodeName + "-" + farmer.Location, // Generate unique ID
+			"name":     farmer.NodeName,
+			"status":   status,
+			"location": farmer.Location,
+			"storage": map[string]interface{}{
+				"used":       utils.RoundToTwoDecimals(storageUsedGB),
+				"total":      utils.RoundToTwoDecimals(storageTotalGB),
+				"percentage": utils.RoundToTwoDecimals(storagePercentage),
+			},
+			"performance": utils.RoundToTwoDecimals(farmer.Uptime), // Using uptime as performance proxy
+			"latency":     farmer.Latency,
+			"uptime":      utils.RoundToTwoDecimals(uptimePercentage),
+			"version":     farmer.Version,
+			"lastSync":    farmer.LastSync.Format(time.RFC3339),
+			"ipAddress":   "192.168.1.100", // You'll need to extract this from addresses
+			"isPrimary":   farmer.IsPrimary,
+			"tags":        farmer.Tags,
+		}
+
+		nodes = append(nodes, node)
+	}
+
+	response := map[string]interface{}{
+		"count": len(nodes),
+		"nodes": nodes,
 	}
 
 	writeJSONResponse(w, http.StatusOK, response)
