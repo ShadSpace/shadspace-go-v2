@@ -16,24 +16,24 @@ type MasterNodeInterface interface {
 
 // FarmerInfo contains information about a farmer node
 type FarmerInfo struct {
-	PeerID          peer.ID
-	StorageCapacity uint64
-	UsedStorage     uint64
-	Reliability     float64
-	LastSeen        time.Time
-	IsActive        bool
-	Addresses       []string
+	PeerID          peer.ID   `json:"peer_id"`
+	StorageCapacity uint64    `json:"storage_capacity"`
+	UsedStorage     uint64    `json:"used_storage"`
+	Reliability     float64   `json:"reliability"`
+	LastSeen        time.Time `json:"last_seen"`
+	IsActive        bool      `json:"is_active"`
+	Addresses       []string  `json:"addresses"`
 }
 
 // NetworkMetrics tracks network-wide metrics
 type NetworkMetrics struct {
-	TotalFarmers    int
-	ActiveFarmers   int
-	TotalStorage    uint64
-	UsedStorage     uint64
-	FilesStored     int
-	UploadsToday    int
-	DownloadsToday  int
+	TotalFarmers   int    `json:"total_farmers"`
+	ActiveFarmers  int    `json:"active_farmers"`
+	TotalStorage   uint64 `json:"total_storage"`
+	UsedStorage    uint64 `json:"used_storage"`
+	FilesStored    int    `json:"files_stored"`
+	UploadsToday   int    `json:"uploads_today"`
+	DownloadsToday int    `json:"downloads_today"`
 }
 
 // Message types
@@ -70,10 +70,9 @@ type RegistrationRequest struct {
 
 type RegistrationResponse struct {
 	Message
-	StatusMessage string `json:"message"`  // Changed from Message to StatusMessage
+	StatusMessage string `json:"message"` // Changed from Message to StatusMessage
 	AssignedID    string `json:"assigned_id,omitempty"`
 }
-
 
 // Proof of Storage messages
 type ProofOfStorage struct {
@@ -154,5 +153,5 @@ type ChunkResponse struct {
 	ChunkHash string `json:"chunk_hash"`
 	Data      []byte `json:"data"`
 	Error     string `json:"error,omitempty"`
-	Success  bool
+	Success   bool
 }

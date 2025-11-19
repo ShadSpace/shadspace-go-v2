@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -33,8 +34,9 @@ func NewAPIServer(masterNode types.MasterNodeInterface, port int) *APIServer {
 		},
 	}
 
-	// Register routes 
+	// Register routes
 	mux.HandleFunc("/health", api.healthHandler)
+	mux.HandleFunc("/farmers", api.farmersHandler)
 
 	return api
 }
@@ -73,12 +75,51 @@ func (a *APIServer) healthHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSONResponse(w, http.StatusOK, response)
 }
 
+// farmersHandler lists registerd farmers
+func (a *APIServer) farmersHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	farmers := a.masterNode.GetFarmers()
+
+	// Serialize farmers into JSON-friendly structures
+	serialized := make([]map[string]interface{}, 0, len(farmers))
+	for _, f := range farmers {
+		if f == nil {
+			continue
+		}
+		serialized = append(serialized, map[string]interface{}{
+			"peer_id":          f.PeerID.String(),
+			"storage_capacity": f.StorageCapacity,
+			"used_storage":     f.UsedStorage,
+			"reliability":      f.Reliability,
+			"last_seen":        f.LastSeen.Format(time.RFC3339),
+			"is_active":        f.IsActive,
+			"addresses":        f.Addresses,
+		})
+	}
+
+	response := map[string]interface{}{
+		"count":   len(serialized),
+		"farmers": serialized,
+	}
+
+	writeJSONResponse(w, http.StatusOK, response)
+}
+
 // writeJSONResponse helper function to write JSON responses
 func writeJSONResponse(w http.ResponseWriter, statusCode int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
-	
-	// Simple JSON response
-	jsonStr := fmt.Sprintf(`{"status":%d,"data":%v}`, statusCode, data)
-	w.Write([]byte(jsonStr))
+
+	wrapper := map[string]interface{}{
+		"status": statusCode,
+		"data":   data,
+	}
+
+	if err := json.NewEncoder(w).Encode(wrapper); err != nil {
+		log.Printf("failed to write JSON response: %v", err)
+	}
 }
