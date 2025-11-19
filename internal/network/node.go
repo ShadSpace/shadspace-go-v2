@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"time"
+	"io"
 
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
@@ -12,9 +13,10 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/libp2p/go-libp2p/core/protocol"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/multiformats/go-multiaddr"
+	libp2pprotocol "github.com/libp2p/go-libp2p/core/protocol" // Renamed import
+	"github.com/ShadSpace/shadspace-go-v2/internal/protocol" 
 )
 
 // NodeConfig holds configuration for creating a libp2p node
@@ -35,6 +37,7 @@ type Node struct {
 	PubSub  *pubsub.PubSub
 	Config  NodeConfig
 	ctx     context.Context
+	handler        *protocol.MessageHandler
 }
 
 // NewNode creates a new libp2p node with the given configuration
@@ -79,12 +82,13 @@ func NewNode(ctx context.Context, config NodeConfig) (*Node, error) {
 		PubSub: ps,
 		Config: config,
 		ctx:    ctx,
+		handler: protocol.NewMessageHandler(nil),
 	}
 
 	// Set up stream handlers
-	h.SetStreamHandler(protocol.ID(config.ProtocolID+"/bitswap"), node.handleBitSwapStream)
-	h.SetStreamHandler(protocol.ID(config.ProtocolID+"/storage"), node.handleStorageStream)
-	h.SetStreamHandler(protocol.ID(config.ProtocolID+"/discovery"), node.handleDiscoveryStream)
+	h.SetStreamHandler(libp2pprotocol.ID(config.ProtocolID+"/bitswap"), node.handleBitSwapStream)
+	h.SetStreamHandler(libp2pprotocol.ID(config.ProtocolID+"/storage"), node.handleStorageStream)
+	h.SetStreamHandler(libp2pprotocol.ID(config.ProtocolID+"/discovery"), node.handleDiscoveryStream)
 
 	// Set connection handlers
 	h.Network().Notify(&network.NotifyBundle{
@@ -142,28 +146,45 @@ func (n *Node) bootstrap() error {
 // handleBitSwapStream handles bitswap protocol streams
 func (n *Node) handleBitSwapStream(s network.Stream) {
 	defer s.Close()
-	log.Printf("New bitswap stream from %s", s.Conn().RemotePeer())
-	
-	// TODO: Implement bitswap protocol logic
-	// Handle chunk requests and responses
+
+	data, err := io.ReadAll(s)
+	if err != nil {
+		log.Printf("Error reading bitswap stream: %v", err)
+		return
+	}
+
+	if err := n.handler.HandleBitSwapMessage(s, data); err != nil {
+		log.Printf("Error handling bitswap message: %v", err)
+	}
 }
 
 // handleStorageStream handles storage-related protocol streams
 func (n *Node) handleStorageStream(s network.Stream) {
 	defer s.Close()
-	log.Printf("New storage stream from %s", s.Conn().RemotePeer())
+	data, err := io.ReadAll(s)
+	if err != nil {
+		log.Printf("Error reading storage stream: %v", err)
+		return
+	}
 	
-	// TODO: Implement storage protocol logic
-	// Handle storage proofs, registration, etc.
+	if err := n.handler.HandleStorageMessage(s, data); err != nil {
+		log.Printf("Error handling storage message: %v", err)
+	}
+
 }
 
 // handleDiscoveryStream handles peer discovery and metadata exchange
 func (n *Node) handleDiscoveryStream(s network.Stream) {
 	defer s.Close()
-	log.Printf("New discovery stream from %s", s.Conn().RemotePeer())
+	data, err := io.ReadAll(s)
+	if err != nil {
+		log.Printf("Error reading discovery stream: %v", err)
+		return
+	}
 	
-	// TODO: Implement discovery protocol logic
-	// Handle farmer registration, file location queries, etc.
+	if err := n.handler.HandleDiscoveryMessage(s, data); err != nil {
+		log.Printf("Error handling discovery message: %v", err)
+	}
 }
 
 // onPeerConnected handles new peer connections
@@ -180,6 +201,11 @@ func (n *Node) onPeerDisconnected(net network.Network, conn network.Conn) {
 	log.Printf("Disconnected from peer: %s", peerID)
 	
 	// TODO: Remove peer from active lists and update metrics
+}
+
+// SetHandler allows setting the message handler after node creation
+func (n *Node) SetHandler(handler *protocol.MessageHandler) {
+	n.handler = handler
 }
 
 // Close gracefully shuts down the node

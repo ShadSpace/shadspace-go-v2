@@ -23,7 +23,7 @@ func main() {
 		Rendezvous:    "shadspace-master-network",
 		NodeType:      "farmer",
 		BootstrapPeers: []string{
-			"/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWLStTx7FseQWAnamsgbm2qbJerzPewL63Fmyer8n1Pz9d",
+			"/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWFeTbY3WhQ6A19XurzqAexFUNYYPxjZb41cSajVaUJiiK",
 		},
 	}
 

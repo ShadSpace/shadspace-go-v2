@@ -2,18 +2,19 @@ package network
 
 import (
 	"context"
-	"log"
+	"encoding/json"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
 	"github.com/ShadSpace/shadspace-go-v2/internal/storage"
+	"github.com/ShadSpace/shadspace-go-v2/pkg/types"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/multiformats/go-multiaddr"
 )
-
 
 // FarmerNode represents a farmer node node in the Shadspace network
 type FarmerNode struct {
@@ -121,6 +122,7 @@ func (fn *FarmerNode) connectToPeer(peerAddr string) error {
 }
 
 // registerWithMaster registers this farmer with the master node
+// registerWithMaster registers this farmer with the master node
 func (fn *FarmerNode) registerWithMaster() error {
 	fn.mu.RLock()
 	masterPeer := fn.masterPeer
@@ -130,22 +132,63 @@ func (fn *FarmerNode) registerWithMaster() error {
 		return fmt.Errorf("no master peer connected")
 	}
 
+	log.Printf("Attempting to register with master node: %s", masterPeer)
+
 	stream, err := fn.node.Host.NewStream(fn.ctx, masterPeer, protocol.ID(fn.node.Config.ProtocolID+"/discovery"))
 	if err != nil {
-		return fmt.Errorf("failed to open stream %w", err)
+		return fmt.Errorf("failed to open stream: %w", err)
+	}
+	defer stream.Close()
+
+	// Create registration request
+	registrationReq := types.RegistrationRequest{
+		Message: types.Message{
+			Type:      types.TypeRegistrationRequest,
+			ID:        fmt.Sprintf("reg-%d", time.Now().UnixNano()),
+			Timestamp: time.Now(),
+			PeerID:    fn.node.Host.ID(),
+		},
+		StorageCapacity: fn.storageCapacity,
+		UsedStorage:     fn.usedStorage,
+		Addresses:       fn.getAddresses(),
+		ProtocolVersion: "1.0.0",
 	}
 
-	defer stream.Close()
-	// TODO: Implement registration protocol
-	// Send registration message with farmer info
-	// Receive confirmation from master
+	log.Printf("Sending registration request to master...")
+
+	// Send registration request
+	if err := json.NewEncoder(stream).Encode(registrationReq); err != nil {
+		return fmt.Errorf("failed to send registration request: %w", err)
+	}
+
+	log.Printf("Waiting for registration response...")
+
+	// Read response
+	var response types.RegistrationResponse
+	if err := json.NewDecoder(stream).Decode(&response); err != nil {
+		return fmt.Errorf("failed to read registration response: %w", err)
+	}
+
+	if !response.Success {
+		return fmt.Errorf("registration failed: %s", response.StatusMessage)
+	}
 
 	fn.mu.Lock()
 	fn.isRegistered = true
 	fn.mu.Unlock()
 
+	log.Printf("Registration successful: %s", response.StatusMessage)
 	return nil
 }
+
+// getAddresses return the farmer`s address 
+func (fn *FarmerNode) getAddresses() []string {
+	var addresses []string
+	for _, addr := range fn.node.Host.Addrs() {
+		addresses = append(addresses, fmt.Sprintf("%s/p2p/%s", addr, fn.node.Host.ID()))
+	}
+	return addresses
+} 
 
 // GetHost returns the underlying libp2p host
 func (fn *FarmerNode) GetHost() host.Host {

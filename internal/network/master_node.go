@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ShadSpace/shadspace-go-v2/internal/api"
+	"github.com/ShadSpace/shadspace-go-v2/internal/protocol"
 	"github.com/ShadSpace/shadspace-go-v2/pkg/types"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -34,6 +35,7 @@ type MasterNode struct {
 
 // Ensure MasterNode implements the interface
 var _ types.MasterNodeInterface = (*MasterNode)(nil)
+var _ protocol.MasterNodeHandler = (*MasterNode)(nil)
 
 // NewMasterNode creates and starts a new master node
 func NewMasterNode(ctx context.Context, config NodeConfig) (*MasterNode, error) {
@@ -56,8 +58,12 @@ func NewMasterNode(ctx context.Context, config NodeConfig) (*MasterNode, error) 
 		metrics:   &types.NetworkMetrics{},
 	}
 
+	node.SetHandler(protocol.NewMessageHandler(master))
+	
 	// Start API server 
 	master.startAPIServer(8080)
+
+	go master.startBackgroundTasks()
 
 	// TODO: start background tasks monitorFarmers, manageDiscovery, collectMetrics
 
@@ -76,7 +82,142 @@ func (mn *MasterNode) startAPIServer(port int) {
 	}()
 }
 
-// Interface implementation
+// handleIncomingRegistration handles farmer registration requests
+func (mn *MasterNode) HandleIncomingRegistration(peerID peer.ID, req types.RegistrationRequest) error {
+	// Validate registration request
+	if req.StorageCapacity == 0 {
+		return fmt.Errorf("invalid storage capacity")
+	}
+
+	// Register the farmer
+	addresses := req.Addresses
+	if len(addresses) == 0 {
+		// If no addresses provided, use the connection address
+		if conns := mn.node.Host.Network().ConnsToPeer(peerID); len(conns) > 0 {
+			// FIXED: Added missing slash in p2p address
+			addresses = []string{conns[0].RemoteMultiaddr().String() + "/p2p/" + peerID.String()}
+		}
+	}
+
+	if err := mn.RegisterFarmer(peerID, req.StorageCapacity, addresses); err != nil {
+		return fmt.Errorf("failed to register farmer: %w", err)
+	}
+
+	// Update metrics
+	mn.metrics.TotalFarmers++
+	mn.metrics.ActiveFarmers++
+	mn.metrics.TotalStorage += req.StorageCapacity
+
+	log.Printf("Farmer %s registered with %d MB capacity", peerID, req.StorageCapacity/(1024*1024))
+
+	return nil
+}
+
+func (mn *MasterNode) RemoveInactiveFarmers() {
+	mn.farmersMu.Lock()
+	defer mn.farmersMu.Unlock()
+
+	now := time.Now()
+	inactiveThreshold := 10 * time.Minute
+
+	for peerID, farmer := range mn.farmers {
+		if now.Sub(farmer.LastSeen) > inactiveThreshold {
+			farmer.IsActive = false
+			mn.metrics.ActiveFarmers--
+			log.Printf("Marked farmer %s as inactive", peerID)
+		}
+	}
+}
+
+func (mn *MasterNode) HandleProofOfStorage(peerID peer.ID, proof types.ProofOfStorage) {
+	mn.farmersMu.Lock()
+	defer mn.farmersMu.Unlock()
+
+	farmer, exists := mn.farmers[peerID]
+	if !exists {
+		log.Printf("Received proof from unregistered farmer: %s", peerID)
+		return
+	}
+
+	// Update farmer information
+	farmer.UsedStorage = proof.UsedStorage
+	farmer.LastSeen = time.Now()
+	farmer.Reliability = proof.Metrics.Reliability
+
+	// Update metrics (note: this should aggregate across all farmers)
+	// For now, we'll just track the latest value
+	mn.metrics.UsedStorage = proof.UsedStorage
+
+	log.Printf("Updated farmer %s: %d/%d MB used, reliability: %.2f", 
+		peerID, proof.UsedStorage/(1024*1024), farmer.StorageCapacity/(1024*1024), proof.Metrics.Reliability)
+}
+
+// HandleStorageOffer processes storage offers from farmers (implements protocol.MasterNodeHandler)
+func (mn *MasterNode) HandleStorageOffer(peerID peer.ID, offer types.StorageOffer) {
+	mn.fileIndexMu.Lock()
+	defer mn.fileIndexMu.Unlock()
+
+	// Add farmer to file index
+	existingFarmers := mn.fileIndex[offer.ChunkHash]
+	
+	// Check if farmer is already in the list
+	found := false
+	for _, existingPeer := range existingFarmers {
+		if existingPeer == peerID {
+			found = true
+			break
+		}
+	}
+	
+	if !found {
+		mn.fileIndex[offer.ChunkHash] = append(existingFarmers, peerID)
+		log.Printf("Storage offer for chunk %s from farmer %s", offer.ChunkHash, peerID)
+	}
+}
+
+
+// startBackgroundTasks starts maintenance tasks for master node
+func (mn *MasterNode) startBackgroundTasks() {
+	cleanupTicker := time.NewTicker(2 * time.Minute)
+	defer cleanupTicker.Stop()
+
+	metricsTicker := time.NewTicker(30 * time.Second)
+	defer metricsTicker.Stop()
+
+	for {
+		select {
+		case <- mn.ctx.Done():
+			return
+		case <- cleanupTicker.C:
+			mn.RemoveInactiveFarmers()
+		case <-metricsTicker.C:
+			mn.updateMetrics()
+		}
+	}
+}
+
+// updateMetrics updates network metrics
+func (mn *MasterNode) updateMetrics() {
+	mn.farmersMu.RLock()
+	defer mn.farmersMu.RUnlock()
+
+	// Count active farmers and calculate total storage
+	activeCount := 0
+	totalStorage := uint64(0)
+	usedStorage := uint64(0)
+
+	for _, farmer := range mn.farmers {
+		if farmer.IsActive {
+			activeCount++
+			totalStorage += farmer.StorageCapacity
+			usedStorage += farmer.UsedStorage
+		}
+	}
+
+	mn.metrics.ActiveFarmers = activeCount
+	mn.metrics.TotalStorage = totalStorage
+	mn.metrics.UsedStorage = usedStorage
+}
 
 // GetHost returns the underlying libp2p host
 func (mn *MasterNode) GetHost() host.Host {
