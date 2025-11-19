@@ -17,13 +17,13 @@ func main() {
 
 	// Load configuration
 	config := network.NodeConfig{ // Fixed: use {} instead of ()
-		Host:          "0.0.0.0",
-		Port:          0, // Random port
-		ProtocolID:    "/shadspace/1.0.0",
-		Rendezvous:    "shadspace-master-network",
-		NodeType:      "farmer",
+		Host:       "0.0.0.0",
+		Port:       0, // Random port
+		ProtocolID: "/shadspace/1.0.0",
+		Rendezvous: "shadspace-master-network",
+		NodeType:   "farmer",
 		BootstrapPeers: []string{
-			"/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWFeTbY3WhQ6A19XurzqAexFUNYYPxjZb41cSajVaUJiiK",
+			"/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWJ8vBDHHfPsj63Qgt1KvQzGDEko9PgwgXzxm4eRRtEW3K",
 		},
 	}
 

@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -156,13 +157,21 @@ func (n *Node) bootstrap() error {
 func (n *Node) handleBitSwapStream(s network.Stream) {
 	defer s.Close()
 
-	data, err := io.ReadAll(s)
-	if err != nil {
-		log.Printf("Error reading bitswap stream: %v", err)
+	var raw json.RawMessage
+	if err := json.NewDecoder(s).Decode(&raw); err != nil {
+		// If decoder fails, fall back to ReadAll to preserve behavior for non-JSON payloads
+		data, err2 := io.ReadAll(s)
+		if err2 != nil {
+			log.Printf("Error reading bitswap stream: %v", err2)
+			return
+		}
+		if err := n.handler.HandleBitSwapMessage(s, data); err != nil {
+			log.Printf("Error handling bitswap message: %v", err)
+		}
 		return
 	}
 
-	if err := n.handler.HandleBitSwapMessage(s, data); err != nil {
+	if err := n.handler.HandleBitSwapMessage(s, raw); err != nil {
 		log.Printf("Error handling bitswap message: %v", err)
 	}
 }
@@ -170,13 +179,20 @@ func (n *Node) handleBitSwapStream(s network.Stream) {
 // handleStorageStream handles storage-related protocol streams
 func (n *Node) handleStorageStream(s network.Stream) {
 	defer s.Close()
-	data, err := io.ReadAll(s)
-	if err != nil {
-		log.Printf("Error reading storage stream: %v", err)
+	var raw json.RawMessage
+	if err := json.NewDecoder(s).Decode(&raw); err != nil {
+		data, err2 := io.ReadAll(s)
+		if err2 != nil {
+			log.Printf("Error reading storage stream: %v", err2)
+			return
+		}
+		if err := n.handler.HandleStorageMessage(s, data); err != nil {
+			log.Printf("Error handling storage message: %v", err)
+		}
 		return
 	}
 
-	if err := n.handler.HandleStorageMessage(s, data); err != nil {
+	if err := n.handler.HandleStorageMessage(s, raw); err != nil {
 		log.Printf("Error handling storage message: %v", err)
 	}
 
@@ -185,13 +201,20 @@ func (n *Node) handleStorageStream(s network.Stream) {
 // handleDiscoveryStream handles peer discovery and metadata exchange
 func (n *Node) handleDiscoveryStream(s network.Stream) {
 	defer s.Close()
-	data, err := io.ReadAll(s)
-	if err != nil {
-		log.Printf("Error reading discovery stream: %v", err)
+	var raw json.RawMessage
+	if err := json.NewDecoder(s).Decode(&raw); err != nil {
+		data, err2 := io.ReadAll(s)
+		if err2 != nil {
+			log.Printf("Error reading discovery stream: %v", err2)
+			return
+		}
+		if err := n.handler.HandleDiscoveryMessage(s, data); err != nil {
+			log.Printf("Error handling discovery message: %v", err)
+		}
 		return
 	}
 
-	if err := n.handler.HandleDiscoveryMessage(s, data); err != nil {
+	if err := n.handler.HandleDiscoveryMessage(s, raw); err != nil {
 		log.Printf("Error handling discovery message: %v", err)
 	}
 }
