@@ -10,6 +10,7 @@ import (
 	"github.com/ShadSpace/shadspace-go-v2/internal/api"
 	"github.com/ShadSpace/shadspace-go-v2/internal/protocol"
 	"github.com/ShadSpace/shadspace-go-v2/pkg/types"
+
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -59,8 +60,8 @@ func NewMasterNode(ctx context.Context, config NodeConfig) (*MasterNode, error) 
 	}
 
 	node.SetHandler(protocol.NewMessageHandler(master))
-	
-	// Start API server 
+
+	// Start API server
 	master.startAPIServer(8080)
 
 	go master.startBackgroundTasks()
@@ -113,6 +114,7 @@ func (mn *MasterNode) HandleIncomingRegistration(peerID peer.ID, req types.Regis
 	return nil
 }
 
+// RemoveInactiveFarmers marks farmers as inactive if they haven't reported in a while
 func (mn *MasterNode) RemoveInactiveFarmers() {
 	mn.farmersMu.Lock()
 	defer mn.farmersMu.Unlock()
@@ -129,6 +131,7 @@ func (mn *MasterNode) RemoveInactiveFarmers() {
 	}
 }
 
+// HandleProofOfStorage processes proofs of storage from farmers (implements protocol.MasterNodeHandler)
 func (mn *MasterNode) HandleProofOfStorage(peerID peer.ID, proof types.ProofOfStorage) {
 	mn.farmersMu.Lock()
 	defer mn.farmersMu.Unlock()
@@ -148,7 +151,7 @@ func (mn *MasterNode) HandleProofOfStorage(peerID peer.ID, proof types.ProofOfSt
 	// For now, we'll just track the latest value
 	mn.metrics.UsedStorage = proof.UsedStorage
 
-	log.Printf("Updated farmer %s: %d/%d MB used, reliability: %.2f", 
+	log.Printf("Updated farmer %s: %d/%d MB used, reliability: %.2f",
 		peerID, proof.UsedStorage/(1024*1024), farmer.StorageCapacity/(1024*1024), proof.Metrics.Reliability)
 }
 
@@ -159,7 +162,7 @@ func (mn *MasterNode) HandleStorageOffer(peerID peer.ID, offer types.StorageOffe
 
 	// Add farmer to file index
 	existingFarmers := mn.fileIndex[offer.ChunkHash]
-	
+
 	// Check if farmer is already in the list
 	found := false
 	for _, existingPeer := range existingFarmers {
@@ -168,13 +171,12 @@ func (mn *MasterNode) HandleStorageOffer(peerID peer.ID, offer types.StorageOffe
 			break
 		}
 	}
-	
+
 	if !found {
 		mn.fileIndex[offer.ChunkHash] = append(existingFarmers, peerID)
 		log.Printf("Storage offer for chunk %s from farmer %s", offer.ChunkHash, peerID)
 	}
 }
-
 
 // startBackgroundTasks starts maintenance tasks for master node
 func (mn *MasterNode) startBackgroundTasks() {
@@ -186,9 +188,9 @@ func (mn *MasterNode) startBackgroundTasks() {
 
 	for {
 		select {
-		case <- mn.ctx.Done():
+		case <-mn.ctx.Done():
 			return
-		case <- cleanupTicker.C:
+		case <-cleanupTicker.C:
 			mn.RemoveInactiveFarmers()
 		case <-metricsTicker.C:
 			mn.updateMetrics()
@@ -271,7 +273,7 @@ func (mn *MasterNode) Shutdown() error {
 		defer cancel()
 		mn.apiServer.Shutdown(apiCtx)
 	}
-	
+
 	mn.cancel()
 	return mn.node.Close()
 }

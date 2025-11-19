@@ -3,20 +3,20 @@ package network
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"time"
-	"io"
 
+	"github.com/ShadSpace/shadspace-go-v2/internal/protocol"
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
-	pubsub "github.com/libp2p/go-libp2p-pubsub"
-	"github.com/multiformats/go-multiaddr"
 	libp2pprotocol "github.com/libp2p/go-libp2p/core/protocol" // Renamed import
-	"github.com/ShadSpace/shadspace-go-v2/internal/protocol" 
+	"github.com/multiformats/go-multiaddr"
 )
 
 // NodeConfig holds configuration for creating a libp2p node
@@ -28,6 +28,7 @@ type NodeConfig struct {
 	NodeType       string
 	BootstrapPeers []string
 	PrivKey        crypto.PrivKey
+	KeyFile        string
 }
 
 // Node represents a base libp2p node with DHT and PubSub capabilities
@@ -37,7 +38,7 @@ type Node struct {
 	PubSub  *pubsub.PubSub
 	Config  NodeConfig
 	ctx     context.Context
-	handler        *protocol.MessageHandler
+	handler *protocol.MessageHandler
 }
 
 // NewNode creates a new libp2p node with the given configuration
@@ -53,6 +54,14 @@ func NewNode(ctx context.Context, config NodeConfig) (*Node, error) {
 	// Add private key if provided
 	if config.PrivKey != nil {
 		opts = append(opts, libp2p.Identity(config.PrivKey))
+	} else {
+		// If no key provided, generate a temporary one (for backward compatibility)
+		log.Println("Warning: No private key provided, generating temporary key")
+		priv, _, err := crypto.GenerateKeyPair(crypto.Ed25519, -1)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate temporary key: %w", err)
+		}
+		opts = append(opts, libp2p.Identity(priv))
 	}
 
 	// Create the libp2p host
@@ -77,11 +86,11 @@ func NewNode(ctx context.Context, config NodeConfig) (*Node, error) {
 	}
 
 	node := &Node{
-		Host:   h,
-		DHT:    kadDHT,
-		PubSub: ps,
-		Config: config,
-		ctx:    ctx,
+		Host:    h,
+		DHT:     kadDHT,
+		PubSub:  ps,
+		Config:  config,
+		ctx:     ctx,
 		handler: protocol.NewMessageHandler(nil),
 	}
 
@@ -166,7 +175,7 @@ func (n *Node) handleStorageStream(s network.Stream) {
 		log.Printf("Error reading storage stream: %v", err)
 		return
 	}
-	
+
 	if err := n.handler.HandleStorageMessage(s, data); err != nil {
 		log.Printf("Error handling storage message: %v", err)
 	}
@@ -181,7 +190,7 @@ func (n *Node) handleDiscoveryStream(s network.Stream) {
 		log.Printf("Error reading discovery stream: %v", err)
 		return
 	}
-	
+
 	if err := n.handler.HandleDiscoveryMessage(s, data); err != nil {
 		log.Printf("Error handling discovery message: %v", err)
 	}
@@ -191,7 +200,7 @@ func (n *Node) handleDiscoveryStream(s network.Stream) {
 func (n *Node) onPeerConnected(net network.Network, conn network.Conn) {
 	peerID := conn.RemotePeer()
 	log.Printf("Connected to peer: %s", peerID)
-	
+
 	// TODO: Add peer to peer store and update metrics
 }
 
@@ -199,7 +208,7 @@ func (n *Node) onPeerConnected(net network.Network, conn network.Conn) {
 func (n *Node) onPeerDisconnected(net network.Network, conn network.Conn) {
 	peerID := conn.RemotePeer()
 	log.Printf("Disconnected from peer: %s", peerID)
-	
+
 	// TODO: Remove peer from active lists and update metrics
 }
 
