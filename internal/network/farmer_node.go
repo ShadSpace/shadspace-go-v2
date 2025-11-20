@@ -19,18 +19,6 @@ import (
 	"github.com/multiformats/go-multiaddr"
 )
 
-type FarmerMetrics struct {
-	Location      string    `json:"location"`
-	NodeName      string    `json:"node_name"`
-	Version       string    `json:"version"`
-	Latency       int       `json:"latency"` // ms
-	Uptime        float64   `json:"uptime"`  // percentage
-	IsPrimary     bool      `json:"is_primary"`
-	Tags          []string  `json:"tags"`
-	StartTime     time.Time `json:"start_time"`
-	LastHeartbeat time.Time `json:"last_heartbeat"`
-}
-
 // FarmerNode represents a farmer node node in the Shadspace network
 type FarmerNode struct {
 	node         *Node
@@ -40,14 +28,7 @@ type FarmerNode struct {
 	masterPeer   peer.ID
 	isRegistered bool
 	mu           sync.RWMutex
-
-	// storage metrics
-	storageCapacity uint64
-	usedStorage     uint64
-
-	// Enhanced metrics
-	metrics     FarmerMetrics
-	locationSet bool
+	farmerInfo   *types.FarmerInfo
 }
 
 // NewFarmerNode creates and starts a new farmer node
@@ -69,24 +50,29 @@ func NewFarmerNode(ctx context.Context, config NodeConfig) (*FarmerNode, error) 
 		return nil, fmt.Errorf("failed to  create base node: %w", err)
 	}
 
+	farmerInfo := &types.FarmerInfo{
+		PeerID:          node.Host.ID(),
+		NodeName:        utils.GenerateNodeName(node.Host.ID()),
+		Version:         "2.1.4",
+		Addresses:       []string{},
+		StorageCapacity: 10 * 1024 * 1024 * 1024, // 10GB default
+		UsedStorage:     0,
+		Reliability:     1.0,
+		Location:        "unknown",
+		IsActive:        false,
+		Tags:            []string{"farmer"},
+		StartTime:       time.Now(),
+		LastSeen:        time.Now(),
+		LastSync:        time.Now(),
+	}
+
 	farmer := &FarmerNode{
-		node:            node,
-		ctx:             farmerCtx,
-		cancel:          cancel,
-		storage:         storageEngine,
-		isRegistered:    false,
-		storageCapacity: 10 * 1024 * 1024 * 1024, // 10GB default
-		usedStorage:     0,
-		metrics: FarmerMetrics{
-			NodeName:      utils.GenerateNodeName(node.Host.ID()),
-			Version:       "2.1.4",
-			Latency:       0,
-			Uptime:        100.0,
-			IsPrimary:     false,
-			Tags:          []string{"farmer"},
-			StartTime:     time.Now(),
-			LastHeartbeat: time.Now(),
-		},
+		node:         node,
+		ctx:          farmerCtx,
+		cancel:       cancel,
+		storage:      storageEngine,
+		farmerInfo:   farmerInfo,
+		isRegistered: false,
 	}
 
 	// Start background process
@@ -171,6 +157,8 @@ func (fn *FarmerNode) registerWithMaster() error {
 	}
 	defer stream.Close()
 
+	fn.updateFarmerInfo()
+
 	// Create registration request
 	registrationReq := types.RegistrationRequest{
 		Message: types.Message{
@@ -179,10 +167,13 @@ func (fn *FarmerNode) registerWithMaster() error {
 			Timestamp: time.Now(),
 			PeerID:    fn.node.Host.ID(),
 		},
-		StorageCapacity: fn.storageCapacity,
-		UsedStorage:     fn.usedStorage,
-		Addresses:       fn.getAddresses(),
+		StorageCapacity: fn.farmerInfo.StorageCapacity,
+		UsedStorage:     fn.farmerInfo.UsedStorage,
+		Addresses:       fn.farmerInfo.Addresses,
 		ProtocolVersion: "1.0.0",
+		Location:        fn.farmerInfo.Location,
+		NodeName:        fn.farmerInfo.NodeName,
+		Version:         fn.farmerInfo.Version,
 	}
 
 	log.Printf("Sending registration request to master...")
@@ -206,6 +197,8 @@ func (fn *FarmerNode) registerWithMaster() error {
 
 	fn.mu.Lock()
 	fn.isRegistered = true
+	fn.farmerInfo.IsActive = true
+	fn.farmerInfo.Tags = fn.generateTags()
 	fn.mu.Unlock()
 
 	log.Printf("Registration successful: %s", response.StatusMessage)
@@ -222,35 +215,37 @@ func (fn *FarmerNode) startMetricsCollection() {
 		case <-fn.ctx.Done():
 			return
 		case <-ticker.C:
-			fn.updateMetrics()
+			fn.updateFarmerInfo()
 		}
 	}
 }
 
 // updateMetrics updates farmer performance and status metrics
-func (fn *FarmerNode) updateMetrics() {
+func (fn *FarmerNode) updateFarmerInfo() {
 	fn.mu.Lock()
 	defer fn.mu.Unlock()
 
-	// Update storage usage from storage engine
+	// Update storage usage
 	storageStats := fn.storage.GetStats()
 	if usedBytes, ok := storageStats["used_bytes"].(uint64); ok {
-		fn.usedStorage = usedBytes
+		fn.farmerInfo.UsedStorage = usedBytes
 	}
 
-	// Calculate uptime
-	uptimeDuration := time.Since(fn.metrics.StartTime)
-	expectedUptime := uptimeDuration.Seconds()
-	fn.metrics.Uptime = expectedUptime
+	// Update uptime
+	fn.farmerInfo.Uptime = time.Since(fn.farmerInfo.StartTime).Seconds()
 
-	fn.updateTags()
-
-	// Update latency if we're connected to master
+	// Update latency if connected to master
 	if fn.masterPeer != "" {
-		fn.metrics.Latency = fn.measureLatency()
+		fn.farmerInfo.Latency = fn.measureLatency()
 	}
 
-	fn.metrics.LastHeartbeat = time.Now()
+	// Update addresses
+	fn.farmerInfo.Addresses = fn.getAddresses()
+
+	// Update tags
+	fn.farmerInfo.Tags = fn.generateTags()
+
+	fn.farmerInfo.LastSeen = time.Now()
 }
 
 // measureLatency measures latency to master node
@@ -284,49 +279,48 @@ func (fn *FarmerNode) getAddresses() []string {
 }
 
 // updateTags updates node tags based on current status
-func (fn *FarmerNode) updateTags() {
+func (fn *FarmerNode) generateTags() []string {
 	tags := []string{"farmer"}
 
-	// Add status-based tags
 	if fn.isRegistered {
-		tags = append(tags, "registered")
+		tags = append(tags, "registered", "online")
 	} else {
 		tags = append(tags, "unregistered")
 	}
 
-	// Add performance-based tags
-	if fn.metrics.Latency > 500 {
+	// Performance-based tags
+	if fn.farmerInfo.Latency > 500 {
 		tags = append(tags, "high-latency")
-	} else if fn.metrics.Latency < 50 {
+	} else if fn.farmerInfo.Latency < 50 {
 		tags = append(tags, "low-latency")
 	}
 
-	// Add storage-based tags
-	usagePercent := float64(fn.usedStorage) / float64(fn.storageCapacity) * 100
+	// Storage-based tags
+	usagePercent := float64(fn.farmerInfo.UsedStorage) / float64(fn.farmerInfo.StorageCapacity) * 100
 	if usagePercent > 80 {
 		tags = append(tags, "storage-full")
 	} else if usagePercent < 20 {
 		tags = append(tags, "storage-available")
 	}
 
-	// Add location-based tags if available
-	if fn.metrics.Location != "" && fn.metrics.Location != "unknown" {
+	// Location-based tags
+	if fn.farmerInfo.Location != "" && fn.farmerInfo.Location != "unknown" {
 		tags = append(tags, "geo-enabled")
 	}
 
-	fn.metrics.Tags = tags
+	return tags
 }
 
 // detectLocation detects the geographical location of the farmer node
 func (fn *FarmerNode) detectLocation() {
-	// First attempt: Use IP geolocation
 	location, err := fn.getLocationFromIP()
 	if err != nil {
-		log.Printf("failed to detect location from IP: %v", err)
-		fn.metrics.Location = "unknown"
+		log.Printf("Failed to detect location from IP: %v", err)
+		fn.farmerInfo.Location = "unknown"
 	} else {
-		fn.metrics.Location = location
-		fn.locationSet = true
+		fn.mu.Lock()
+		fn.farmerInfo.Location = location
+		fn.mu.Unlock()
 		log.Printf("Detected location: %s", location)
 	}
 }
@@ -422,13 +416,18 @@ func (fn *FarmerNode) sendProofOfStorage() {
 
 	stream, err := fn.node.Host.NewStream(fn.ctx, fn.masterPeer, protocol.ID(fn.node.Config.ProtocolID+"/proofofstorage"))
 	if err != nil {
-		log.Printf("Failed to send heartbeat: %v", err)
+		log.Printf("Failed to send proof of storage: %v", err)
 		fn.mu.Lock()
 		fn.isRegistered = false
+		fn.farmerInfo.IsActive = false
+		fn.farmerInfo.Tags = fn.generateTags()
 		fn.mu.Unlock()
 		return
 	}
 	defer stream.Close()
+
+	// Update farmer info before sending
+	fn.updateFarmerInfo()
 
 	proofOfStorage := types.ProofOfStorage{
 		Message: types.Message{
@@ -437,17 +436,17 @@ func (fn *FarmerNode) sendProofOfStorage() {
 			Timestamp: time.Now(),
 			PeerID:    fn.node.Host.ID(),
 		},
-		UsedStorage: fn.usedStorage,
-		Location:    fn.metrics.Location,
-		Latency:     fn.metrics.Latency,
-		Uptime:      fn.metrics.Uptime,
+		UsedStorage:      fn.farmerInfo.UsedStorage,
+		AvailableStorage: fn.farmerInfo.StorageCapacity,
+		ChunksStored:     0, // TODO: Get actual chunks stored
+		Uptime:           fn.farmerInfo.Uptime,
+		Location:         fn.farmerInfo.Location,
+		Latency:          fn.farmerInfo.Latency,
 	}
 
-	// Serialize and send the proof of storage
 	if err := json.NewEncoder(stream).Encode(proofOfStorage); err != nil {
 		log.Printf("Failed to encode proof of storage: %v", err)
 	}
-
 }
 
 // GetHost returns the underlying libp2p host

@@ -136,7 +136,7 @@ func (h *MessageHandler) HandleProofOfStorageMessage(stream network.Stream, data
 	validProofs := h.validateStorageProofs(proofMsg.StorageProofs)
 
 	// Calculate reliability score based on proofs
-	reliability := h.calculateReliability(validProofs, proofMsg.Metrics)
+	reliability := h.calculateReliability(validProofs, proofMsg.Performance)
 
 	log.Printf("Farmer %s reliability score: %.2f (%d/%d valid proofs)",
 		proofMsg.PeerID, reliability, len(validProofs), len(proofMsg.StorageProofs))
@@ -291,7 +291,7 @@ func (h *MessageHandler) validateChallengeProofs(proofs []types.StorageProof, ch
 }
 
 // calculateReliability calculates farmer reliability score
-func (h *MessageHandler) calculateReliability(validProofs []types.StorageProof, metrics types.FarmerMetrics) float64 {
+func (h *MessageHandler) calculateReliability(validProofs []types.StorageProof, metrics types.PerformanceMetrics) float64 {
 	if len(validProofs) == 0 {
 		return 0.0
 	}
@@ -299,8 +299,12 @@ func (h *MessageHandler) calculateReliability(validProofs []types.StorageProof, 
 	// Base reliability from proof validation
 	proofScore := float64(len(validProofs)) / float64(len(validProofs)+1)
 
-	// Combine with other metrics
 	reliability := (proofScore + metrics.SuccessRate + metrics.StorageHealth) / 3.0
+
+	// Combine with other metrics
+	if metrics.Reliability > 0 {
+		reliability = (reliability + metrics.Reliability) / 2.0
+	}
 
 	return reliability
 }

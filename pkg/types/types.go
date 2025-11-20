@@ -12,30 +12,35 @@ type MasterNodeInterface interface {
 	GetHost() host.Host
 	GetMetrics() *NetworkMetrics
 	GetFarmers() []*FarmerInfo
-	GetEnhancedFarmers() []*FarmerEnhancedMetrics
 }
 
-type FarmerEnhancedMetrics struct {
-	Location  string    `json:"location"`
-	NodeName  string    `json:"node_name"`
-	Version   string    `json:"version"`
-	Latency   int       `json:"latency"`
-	Uptime    float64   `json:"uptime"`
-	IsPrimary bool      `json:"is_primary"`
-	Tags      []string  `json:"tags"`
-	LastSync  time.Time `json:"last_sync"`
-}
-
-// FarmerInfo contains information about a farmer node
+// FarmerInfo contains comprehensive information about a farmer node
 type FarmerInfo struct {
-	PeerID          peer.ID   `json:"peer_id"`
-	StorageCapacity uint64    `json:"storage_capacity"`
-	UsedStorage     uint64    `json:"used_storage"`
-	Reliability     float64   `json:"reliability"`
-	LastSeen        time.Time `json:"last_seen"`
-	IsActive        bool      `json:"is_active"`
-	Addresses       []string  `json:"addresses"`
-	Location        string    `json:"location,omitempty"`
+	// Basic identification
+	PeerID    peer.ID  `json:"peer_id"`
+	NodeName  string   `json:"node_name"`
+	Version   string   `json:"version"`
+	Addresses []string `json:"addresses"`
+
+	// Storage capacity
+	StorageCapacity uint64 `json:"storage_capacity"`
+	UsedStorage     uint64 `json:"used_storage"`
+
+	// Performance metrics
+	Reliability float64 `json:"reliability"`
+	Latency     int     `json:"latency"` // ms
+	Uptime      float64 `json:"uptime"`  // seconds or percentage
+
+	// Status and location
+	Location  string   `json:"location"`
+	IsActive  bool     `json:"is_active"`
+	IsPrimary bool     `json:"is_primary,omitempty"`
+	Tags      []string `json:"tags"`
+
+	// Timestamps
+	LastSeen  time.Time `json:"last_seen"`
+	StartTime time.Time `json:"start_time,omitempty"`
+	LastSync  time.Time `json:"last_sync,omitempty"`
 }
 
 // NetworkMetrics tracks network-wide metrics
@@ -47,6 +52,15 @@ type NetworkMetrics struct {
 	FilesStored    int    `json:"files_stored"`
 	UploadsToday   int    `json:"uploads_today"`
 	DownloadsToday int    `json:"downloads_today"`
+}
+
+// PerformanceMetrics for detailed farmer performance tracking
+type PerformanceMetrics struct {
+	Reliability   float64 `json:"reliability"`
+	ResponseTime  int64   `json:"response_time_ms"`
+	SuccessRate   float64 `json:"success_rate"`
+	StorageHealth float64 `json:"storage_health"`
+	ChunksStored  int     `json:"chunks_stored"`
 }
 
 // Message types
@@ -86,21 +100,21 @@ type RegistrationRequest struct {
 
 type RegistrationResponse struct {
 	Message
-	StatusMessage string `json:"message"` // Changed from Message to StatusMessage
+	StatusMessage string `json:"message"`
 	AssignedID    string `json:"assigned_id,omitempty"`
 }
 
 // Proof of Storage messages
 type ProofOfStorage struct {
 	Message
-	UsedStorage      uint64         `json:"used_storage"`
-	AvailableStorage uint64         `json:"available_storage"`
-	ChunksStored     int            `json:"chunks_stored"`
-	Uptime           float64        `json:"uptime_seconds"`
-	StorageProofs    []StorageProof `json:"storage_proofs"`
-	Metrics          FarmerMetrics  `json:"metrics"`
-	Location         string         `json:"location,omitempty"`
-	Latency          int            `json:"latency_ms,omitempty"`
+	UsedStorage      uint64             `json:"used_storage"`
+	AvailableStorage uint64             `json:"available_storage"`
+	ChunksStored     int                `json:"chunks_stored"`
+	Uptime           float64            `json:"uptime_seconds"`
+	StorageProofs    []StorageProof     `json:"storage_proofs"`
+	Performance      PerformanceMetrics `json:"performance"`
+	Location         string             `json:"location,omitempty"`
+	Latency          int                `json:"latency_ms,omitempty"`
 }
 
 type StorageProof struct {
@@ -108,13 +122,6 @@ type StorageProof struct {
 	Proof     []byte    `json:"proof"`
 	Timestamp time.Time `json:"timestamp"`
 	Size      int       `json:"size"`
-}
-
-type FarmerMetrics struct {
-	Reliability   float64 `json:"reliability"`
-	ResponseTime  int64   `json:"response_time_ms"`
-	SuccessRate   float64 `json:"success_rate"`
-	StorageHealth float64 `json:"storage_health"`
 }
 
 // Storage Challenge messages
@@ -171,5 +178,5 @@ type ChunkResponse struct {
 	ChunkHash string `json:"chunk_hash"`
 	Data      []byte `json:"data"`
 	Error     string `json:"error,omitempty"`
-	Success   bool
+	Success   bool   `json:"success"`
 }

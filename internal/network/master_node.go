@@ -32,9 +32,6 @@ type MasterNode struct {
 
 	// Network metrics - using types.NetworkMetrics
 	metrics *types.NetworkMetrics
-
-	//  Enhanced farmer trackinf
-	farmerMetrics map[peer.ID]*types.FarmerEnhancedMetrics
 }
 
 // Ensure MasterNode implements the interface
@@ -54,13 +51,12 @@ func NewMasterNode(ctx context.Context, config NodeConfig) (*MasterNode, error) 
 	}
 
 	master := &MasterNode{
-		node:          node,
-		ctx:           masterCtx,
-		cancel:        cancel,
-		farmers:       make(map[peer.ID]*types.FarmerInfo),
-		fileIndex:     make(map[string][]peer.ID),
-		metrics:       &types.NetworkMetrics{},
-		farmerMetrics: make(map[peer.ID]*types.FarmerEnhancedMetrics),
+		node:      node,
+		ctx:       masterCtx,
+		cancel:    cancel,
+		farmers:   make(map[peer.ID]*types.FarmerInfo),
+		fileIndex: make(map[string][]peer.ID),
+		metrics:   &types.NetworkMetrics{},
 	}
 
 	node.SetHandler(protocol.NewMessageHandler(master))
@@ -134,8 +130,8 @@ func (mn *MasterNode) HandleIncomingRegistration(peerID peer.ID, req types.Regis
 	return nil
 }
 
-// RemoveInactiveFarmers marks farmers as inactive if they haven't reported in a while
-func (mn *MasterNode) RemoveInactiveFarmers() {
+// ChangeIsActiveStatus for inactive farmers to false
+func (mn *MasterNode) ChangeIsActiveStatusForFarmers() {
 	mn.farmersMu.Lock()
 	defer mn.farmersMu.Unlock()
 
@@ -145,13 +141,8 @@ func (mn *MasterNode) RemoveInactiveFarmers() {
 	for peerID, farmer := range mn.farmers {
 		if now.Sub(farmer.LastSeen) > inactiveThreshold {
 			farmer.IsActive = false
-			mn.metrics.ActiveFarmers--
-
-			// Update farmer metrics tags
-			if metrics, exists := mn.farmerMetrics[peerID]; exists {
-				metrics.Tags = updateTags(metrics.Tags, "offline", true)
-				metrics.Tags = updateTags(metrics.Tags, "online", false)
-			}
+			farmer.Tags = updateTags(farmer.Tags, "offline", true)
+			farmer.Tags = updateTags(farmer.Tags, "online", false)
 
 			log.Printf("Marked farmer %s as inactive", peerID)
 		}
@@ -172,28 +163,18 @@ func (mn *MasterNode) HandleProofOfStorage(peerID peer.ID, proof types.ProofOfSt
 	// Update farmer information
 	farmer.UsedStorage = proof.UsedStorage
 	farmer.LastSeen = time.Now()
+	farmer.LastSync = time.Now()
+	farmer.Latency = proof.Latency
+	farmer.Uptime = proof.Uptime
 
-	// Calculate reliablity based on the proof data
-	reliability := mn.calculateReliability(proof)
-	farmer.Reliability = reliability
-	farmer.LastSeen = time.Now()
-
-	if metrics, exists := mn.farmerMetrics[peerID]; exists {
-		metrics.Location = proof.Location
-		metrics.Latency = proof.Latency
-		metrics.Uptime = proof.Uptime
-		metrics.LastSync = time.Now()
-		metrics.Tags = mn.generateFarmerTags(farmer, metrics)
-	} else {
-		// Create new metrics entry
-		mn.farmerMetrics[peerID] = &types.FarmerEnhancedMetrics{
-			Location: proof.Location,
-			Latency:  proof.Latency,
-			Uptime:   proof.Uptime,
-			LastSync: time.Now(),
-			Tags:     mn.generateFarmerTags(farmer, nil),
-		}
+	if proof.Location != "" && proof.Location != "unknown" {
+		farmer.Location = proof.Location
 	}
+
+	// Recalculate reliability
+	reliability := mn.calculateReliability(proof)
+	farmer.Tags = mn.generateFarmerTags(farmer)
+
 	// Update network metrics
 	mn.updateNetworkMetrics()
 
@@ -235,7 +216,7 @@ func (mn *MasterNode) calculateReliability(proof types.ProofOfStorage) float64 {
 }
 
 // generateFarmerTags generates tags for frontend display
-func (mn *MasterNode) generateFarmerTags(farmer *types.FarmerInfo, metrics *types.FarmerEnhancedMetrics) []string {
+func (mn *MasterNode) generateFarmerTags(farmer *types.FarmerInfo) []string {
 	tags := []string{"farmer"}
 
 	// Status tags
@@ -260,18 +241,14 @@ func (mn *MasterNode) generateFarmerTags(farmer *types.FarmerInfo, metrics *type
 		tags = append(tags, "low-usage")
 	}
 
-	// Location-based tags if available
-	if metrics != nil && metrics.Location != "" && metrics.Location != "unknown" {
+	if farmer.Location != "" && farmer.Location != "unknown" {
 		tags = append(tags, "geo-enabled")
 	}
 
-	// Latency tags
-	if metrics != nil {
-		if metrics.Latency > 500 {
-			tags = append(tags, "high-latency")
-		} else if metrics.Latency < 50 {
-			tags = append(tags, "low-latency")
-		}
+	if farmer.Latency > 500 {
+		tags = append(tags, "high-latency")
+	} else if farmer.Latency < 50 {
+		tags = append(tags, "low-latency")
 	}
 
 	return tags
@@ -313,7 +290,7 @@ func (mn *MasterNode) startBackgroundTasks() {
 		case <-mn.ctx.Done():
 			return
 		case <-cleanupTicker.C:
-			mn.RemoveInactiveFarmers()
+			mn.ChangeIsActiveStatusForFarmers()
 		case <-metricsTicker.C:
 			mn.updateMetrics()
 		}
@@ -389,31 +366,6 @@ func (mn *MasterNode) GetFarmers() []*types.FarmerInfo {
 	return activeFarmers
 }
 
-// GetEnhancedFarmers returns farmers with enhanced metrics for frontend
-func (mn *MasterNode) GetEnhancedFarmers() []*types.FarmerEnhancedMetrics {
-	mn.farmersMu.RLock()
-	defer mn.farmersMu.RUnlock()
-
-	var enhancedFarmers []*types.FarmerEnhancedMetrics
-	for peerID, farmer := range mn.farmers {
-		if farmer.IsActive {
-			if metrics, exists := mn.farmerMetrics[peerID]; exists {
-				enhancedFarmers = append(enhancedFarmers, metrics)
-			} else {
-				// Create basic metrics if none exist
-				enhancedFarmers = append(enhancedFarmers, &types.FarmerEnhancedMetrics{
-					Location: "Unknown",
-					NodeName: "Node-" + peerID.String()[:8],
-					Version:  "2.1.4",
-					Tags:     []string{"farmer", "online"},
-					LastSync: farmer.LastSeen,
-				})
-			}
-		}
-	}
-	return enhancedFarmers
-}
-
 // RegisterFarmer registers a new farmer node
 func (mn *MasterNode) RegisterFarmer(peerID peer.ID, capacity uint64, addresses []string, location, nodeName, version string) error {
 	mn.farmersMu.Lock()
@@ -425,23 +377,17 @@ func (mn *MasterNode) RegisterFarmer(peerID peer.ID, capacity uint64, addresses 
 		UsedStorage:     0,
 		Reliability:     1.0,
 		LastSeen:        time.Now(),
+		LastSync:        time.Now(),
 		IsActive:        true,
 		Addresses:       addresses,
+		Location:        location,
+		NodeName:        nodeName,
+		Version:         version,
+		StartTime:       time.Now(),
+		Tags:            []string{"farmer", "online"},
 	}
 
 	mn.farmers[peerID] = farmer
-
-	// Initialize enhanced metrics
-	mn.farmerMetrics[peerID] = &types.FarmerEnhancedMetrics{
-		Location:  location,
-		NodeName:  nodeName,
-		Version:   version,
-		Latency:   0,
-		Uptime:    0,
-		IsPrimary: false,
-		Tags:      []string{"farmer", "online", "new"},
-		LastSync:  time.Now(),
-	}
 
 	log.Printf("Registered farmer: %s", peerID)
 	return nil
