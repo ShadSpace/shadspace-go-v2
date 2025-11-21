@@ -138,6 +138,8 @@ func (h *MessageHandler) HandleProofOfStorageMessage(stream network.Stream, data
 	// Calculate reliability score based on proofs
 	reliability := h.calculateReliability(validProofs, proofMsg.Performance)
 
+	h.masterNode.HandleProofOfStorage(proofMsg.PeerID, proofMsg)
+
 	log.Printf("Farmer %s reliability score: %.2f (%d/%d valid proofs)",
 		proofMsg.PeerID, reliability, len(validProofs), len(proofMsg.StorageProofs))
 
