@@ -42,7 +42,7 @@ func main() {
 	// Load configuration
 	config := network.NodeConfig{
 		Host:           "0.0.0.0",
-		Port:           4001,
+		Port:           4003,
 		ProtocolID:     "/shadspace/1.0.0",
 		Rendezvous:     "shadspace-master-network",
 		NodeType:       "master",

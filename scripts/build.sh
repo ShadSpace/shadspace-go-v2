@@ -50,6 +50,8 @@ build_master() {
     go build -o bin/master-node ./cmd/master-node
     if [ $? -eq 0 ]; then
         print_success "Master node built successfully: bin/master-node"
+        clear
+        ./bin/master-node 
     else
         print_error "Failed to build master node"
         return 1
@@ -62,6 +64,8 @@ build_farmer() {
     go build -o bin/farmer-node ./cmd/farmer-node
     if [ $? -eq 0 ]; then
         print_success "Farmer node built successfully: bin/farmer-node"
+        clear
+        ./bin/farmer-node
     else
         print_error "Failed to build farmer node"
         return 1

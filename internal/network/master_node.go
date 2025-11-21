@@ -12,6 +12,7 @@ import (
 	"github.com/ShadSpace/shadspace-go-v2/pkg/types"
 
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -32,6 +33,9 @@ type MasterNode struct {
 
 	// Network metrics - using types.NetworkMetrics
 	metrics *types.NetworkMetrics
+
+	// Peer connection events
+	connectionEvents chan peer.ID
 }
 
 // Ensure MasterNode implements the interface
@@ -51,18 +55,20 @@ func NewMasterNode(ctx context.Context, config NodeConfig) (*MasterNode, error) 
 	}
 
 	master := &MasterNode{
-		node:      node,
-		ctx:       masterCtx,
-		cancel:    cancel,
-		farmers:   make(map[peer.ID]*types.FarmerInfo),
-		fileIndex: make(map[string][]peer.ID),
-		metrics:   &types.NetworkMetrics{},
+		node:             node,
+		ctx:              masterCtx,
+		cancel:           cancel,
+		farmers:          make(map[peer.ID]*types.FarmerInfo),
+		fileIndex:        make(map[string][]peer.ID),
+		metrics:          &types.NetworkMetrics{},
+		connectionEvents: make(chan peer.ID, 100), // Buffered channel for connection events
 	}
 
 	node.SetHandler(protocol.NewMessageHandler(master))
 
 	// Start API server
 	master.startAPIServer(8080)
+	master.setupConnectionMonitoring()
 
 	go master.startBackgroundTasks()
 
@@ -136,15 +142,27 @@ func (mn *MasterNode) ChangeIsActiveStatusForFarmers() {
 	defer mn.farmersMu.Unlock()
 
 	now := time.Now()
-	inactiveThreshold := 10 * time.Minute
+	inactiveThreshold := 5 * time.Minute // Reduced from 10 to 5 minutes
 
 	for peerID, farmer := range mn.farmers {
+		// Check if disconnected via network
+		if mn.node.Host.Network().Connectedness(peerID) != network.Connected {
+			if farmer.IsActive {
+				farmer.IsActive = false
+				farmer.Tags = updateTags(farmer.Tags, "offline", true)
+				farmer.Tags = updateTags(farmer.Tags, "online", false)
+				log.Printf("Marked farmer %s as inactive (network disconnected)", peerID)
+			}
+			continue
+		}
+
+		// Check last seen time
 		if now.Sub(farmer.LastSeen) > inactiveThreshold {
 			farmer.IsActive = false
 			farmer.Tags = updateTags(farmer.Tags, "offline", true)
 			farmer.Tags = updateTags(farmer.Tags, "online", false)
-
-			log.Printf("Marked farmer %s as inactive", peerID)
+			log.Printf("Marked farmer %s as inactive (last seen %v ago)",
+				peerID, now.Sub(farmer.LastSeen))
 		}
 	}
 }
@@ -174,6 +192,13 @@ func (mn *MasterNode) HandleProofOfStorage(peerID peer.ID, proof types.ProofOfSt
 	// Recalculate reliability
 	reliability := mn.calculateReliability(proof)
 	farmer.Tags = mn.generateFarmerTags(farmer)
+
+	// changes status to active upon receiving proof
+	if !farmer.IsActive {
+		farmer.IsActive = true
+		farmer.Tags = updateTags(farmer.Tags, "online", true)
+		farmer.Tags = updateTags(farmer.Tags, "offline", false)
+	}
 
 	// Update network metrics
 	mn.updateNetworkMetrics()
@@ -359,9 +384,7 @@ func (mn *MasterNode) GetFarmers() []*types.FarmerInfo {
 
 	var activeFarmers []*types.FarmerInfo
 	for _, farmer := range mn.farmers {
-		if farmer.IsActive {
-			activeFarmers = append(activeFarmers, farmer)
-		}
+		activeFarmers = append(activeFarmers, farmer)
 	}
 	return activeFarmers
 }
@@ -413,6 +436,62 @@ func updateTags(tags []string, tag string, add bool) []string {
 		}
 		return newTags
 	}
+}
+
+func (mn *MasterNode) setupConnectionMonitoring() {
+	// Monitor connection state changes
+	mn.node.Host.Network().Notify(&network.NotifyBundle{
+		DisconnectedF: func(net network.Network, conn network.Conn) {
+			peerID := conn.RemotePeer()
+			select {
+			case mn.connectionEvents <- peerID:
+				log.Printf("Farmer %s disconnected", peerID)
+			default:
+				// Channel full, log and continue
+				log.Printf("Farmer %s disconnected (event channel full)", peerID)
+			}
+		},
+	})
+
+	// Start connection monitor goroutine
+	go mn.monitorConnections()
+}
+
+// monitorConnections handles connection events
+func (mn *MasterNode) monitorConnections() {
+	for {
+		select {
+		case <-mn.ctx.Done():
+			return
+		case peerID := <-mn.connectionEvents:
+			mn.handleFarmerDisconnect(peerID)
+		}
+	}
+}
+
+// handleFarmerDisconnect updates farmer status when they disconnect
+func (mn *MasterNode) handleFarmerDisconnect(peerID peer.ID) {
+	mn.farmersMu.Lock()
+	defer mn.farmersMu.Unlock()
+
+	farmer, exists := mn.farmers[peerID]
+	if !exists {
+		return
+	}
+
+	// Mark as inactive
+	farmer.IsActive = false
+	farmer.LastSeen = time.Now()
+	farmer.Tags = updateTags(farmer.Tags, "online", false)
+	farmer.Tags = updateTags(farmer.Tags, "offline", true)
+
+	// Update metrics
+	mn.metrics.ActiveFarmers--
+	if mn.metrics.ActiveFarmers < 0 {
+		mn.metrics.ActiveFarmers = 0
+	}
+
+	log.Printf("Farmer %s marked as offline due to disconnection", peerID)
 }
 
 // Shutdown gracefully shuts down the master node
