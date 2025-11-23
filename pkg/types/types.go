@@ -188,6 +188,7 @@ const (
 	GossipTypeNodeInfo         GossipMessageType = "node_info"
 	GossipTypeFileAnnounce     GossipMessageType = "file_announce"
 	GossipTypeReputationUpdate GossipMessageType = "reputation_update"
+	GossipTypeFileDelete       GossipMessageType = "file_delete"
 )
 
 type GossipMessage struct {
@@ -201,4 +202,33 @@ type GossipMessage struct {
 func (fi *FarmerInfo) ToJSON() json.RawMessage {
 	data, _ := json.Marshal(fi)
 	return data
+}
+
+func (fa *FileAnnounceMessage) ToJSON() (json.RawMessage, error) {
+	data, err := json.Marshal(fa)
+	return json.RawMessage(data), err
+}
+
+func (fd *FileDeleteMessage) ToJSON() (json.RawMessage, error) {
+	data, err := json.Marshal(fd)
+	return json.RawMessage(data), err
+}
+
+type FileAnnounceMessage struct {
+	FileHash  string         `json:"file_hash"`
+	Locations []FileLocation `json:"locations"`
+	Timestamp time.Time      `json:"timestamp"`
+}
+
+type FileDeleteMessage struct {
+	FileHash  string    `json:"file_hash"`
+	Timestamp time.Time `json:"timestamp"`
+	PeerID    peer.ID   `json:"peer_id"`
+}
+
+type FileLocation struct {
+	FileHash    string    `json:"file_hash"`
+	ShardHashes []string  `json:"shard_hashes,omitempty"`
+	PeerIDs     []peer.ID `json:"peer_ids"`
+	Timestamp   time.Time `json:"timestamp"`
 }

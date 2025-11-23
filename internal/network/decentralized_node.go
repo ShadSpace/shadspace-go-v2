@@ -36,6 +36,9 @@ type DecentralizedNode struct {
 	farmerInfo  *types.FarmerInfo
 	networkView *NetworkView
 	mu          sync.RWMutex
+
+	storageOps  *StorageOperations
+	fileManager *storage.FileManager
 }
 
 // NetworkView represents the node's view of the network
@@ -84,6 +87,8 @@ func NewDecentralizedNode(ctx context.Context, config NodeConfig) (*Decentralize
 		return nil, fmt.Errorf("failed to create storage engine: %w", err)
 	}
 
+	shardManager := storage.NewShardManager()
+
 	// Create farmer info
 	farmerInfo := &types.FarmerInfo{
 		PeerID:          baseNode.Host.ID(),
@@ -117,6 +122,12 @@ func NewDecentralizedNode(ctx context.Context, config NodeConfig) (*Decentralize
 		},
 	}
 
+	fileManager := storage.NewFileManager(storageEngine, shardManager)
+	storageOps := NewStorageOperations(dn, fileManager)
+
+	dn.fileManager = fileManager
+	dn.storageOps = storageOps
+
 	dn.gossip = NewGossipManager(baseNode.Host, ps, dn)
 	dn.discovery = NewPeerDiscovery(baseNode.Host, dhtInstance, dn)
 	dn.reputation = NewReputationSystem(dn)
@@ -136,6 +147,7 @@ func NewDecentralizedNode(ctx context.Context, config NodeConfig) (*Decentralize
 	go dn.gossip.Start()
 	go dn.discovery.Start()
 	go dn.reputation.MonitorPeers()
+	go storageOps.MonitorStorageOperations()
 
 	log.Printf("Decentralized node initialized with ID: %s", baseNode.Host.ID())
 	return dn, nil
@@ -315,4 +327,29 @@ func (dn *DecentralizedNode) Close() error {
 
 	log.Println("Decentralized node shutdown complete")
 	return nil
+}
+
+// GetHostID returns the node's host ID
+func (dn *DecentralizedNode) GetHostID() string {
+	return dn.node.Host.ID().String()
+}
+
+// GetStorageOperations returns the storage operations instance
+func (dn *DecentralizedNode) GetStorageOperations() *StorageOperations {
+	return dn.storageOps
+}
+
+// GetFileManager returns the file manager instance
+func (dn *DecentralizedNode) GetFileManager() *storage.FileManager {
+	return dn.fileManager
+}
+
+// GetStorageEngine returns the storage engine instance
+func (dn *DecentralizedNode) GetStorageEngine() *storage.Engine {
+	return dn.storage
+}
+
+// GetNetworkStats returns network statistics
+func (dn *DecentralizedNode) GetNetworkStats() map[string]interface{} {
+	return dn.GetNetworkStats()
 }
