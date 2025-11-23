@@ -1,0 +1,296 @@
+package network
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"sync"
+	"time"
+
+	"github.com/ShadSpace/shadspace-go-v2/internal/storage"
+	"github.com/ShadSpace/shadspace-go-v2/pkg/types"
+	"github.com/ShadSpace/shadspace-go-v2/pkg/utils"
+	"github.com/multiformats/go-multiaddr"
+
+	dht "github.com/libp2p/go-libp2p-kad-dht"
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
+)
+
+type DecentralizedNode struct {
+	node         *Node
+	ctx          context.Context
+	cancel       context.CancelFunc
+	storage      *storage.Engine
+	shardManager *storage.ShardManager
+
+	// Dentralized components
+	dht        *dht.IpfsDHT
+	pubsub     *pubsub.PubSub
+	gossip     *GossipManager
+	discovery  *PeerDiscovery
+	reputation *ReputationSystem
+
+	// Distributed state
+	farmerInfo  *types.FarmerInfo
+	networkView *NetworkView
+	mu          sync.RWMutex
+}
+
+// NetworkView represents the node's view of the network
+type NetworkView struct {
+	peers       map[peer.ID]*PeerInfo
+	fileIndex   map[string][]peer.ID
+	reputation  map[peer.ID]float64
+	lastUpdated time.Time
+	mu          sync.RWMutex
+}
+
+type PeerInfo struct {
+	Info        *types.FarmerInfo
+	LastSeen    time.Time
+	Reliability float64
+	Distance    int
+}
+
+func NewDecentralizedNode(ctx context.Context, config NodeConfig) (*DecentralizedNode, error) {
+	nodeCtx, cancel := context.WithCancel(ctx)
+
+	// Create base node
+	baseNode, err := NewNode(nodeCtx, config)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to create base node: %w", err)
+	}
+
+	// Initialize DHT for distribution hash table
+	dhtInstance, err := dht.New(nodeCtx, baseNode.Host, dht.Mode(dht.ModeAuto))
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to create DHT: %w", err)
+	}
+
+	ps, err := pubsub.NewGossipSub(nodeCtx, baseNode.Host)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to create pubsub: %w", err)
+	}
+
+	// Initialize storage
+	storageEngine, err := storage.NewEngine()
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to create storage engine: %w", err)
+	}
+
+	// Create farmer info
+	farmerInfo := &types.FarmerInfo{
+		PeerID:          baseNode.Host.ID(),
+		NodeName:        utils.GenerateNodeName(baseNode.Host.ID()),
+		Version:         "0.0.1",
+		Addresses:       utils.GetNodeAddresses(baseNode.Host),
+		StorageCapacity: 10 * 1024 * 1024 * 1024, // 10GB
+		UsedStorage:     0,
+		Reliability:     1.0,
+		Location:        "unknown",
+		IsActive:        true,
+		Tags:            []string{"farmer", "decentralized"},
+		StartTime:       time.Now(),
+		LastSeen:        time.Now(),
+	}
+
+	//  Create decentralised node
+	dn := &DecentralizedNode{
+		node:         baseNode,
+		ctx:          nodeCtx,
+		cancel:       cancel,
+		storage:      storageEngine,
+		shardManager: storage.NewShardManager(),
+		dht:          dhtInstance,
+		pubsub:       ps,
+		farmerInfo:   farmerInfo,
+		networkView: &NetworkView{
+			peers:      make(map[peer.ID]*PeerInfo),
+			fileIndex:  make(map[string][]peer.ID),
+			reputation: make(map[peer.ID]float64),
+		},
+	}
+
+	dn.gossip = NewGossipManager(baseNode.Host, ps, dn)
+	dn.discovery = NewPeerDiscovery(baseNode.Host, dhtInstance, dn)
+	dn.reputation = NewReputationSystem(dn)
+
+	// Bootstrap the node
+	if err := dn.bootstrap(); err != nil {
+		log.Printf("Bootstrap warning: %v", err)
+	}
+
+	baseNode.Host.Network().Notify(&network.NotifyBundle{
+		ConnectedF:    dn.onPeerConnected,
+		DisconnectedF: dn.onPeerDisconnected,
+	})
+
+	// // Start background processes
+	go dn.maintainNetworkState()
+	go dn.gossip.Start()
+	go dn.discovery.Start()
+
+	log.Printf("Decentralized node initialized with ID: %s", baseNode.Host.ID())
+	return dn, nil
+
+}
+
+// bootstrap initializes the decentralized node
+func (dn *DecentralizedNode) bootstrap() error {
+	if err := dn.dht.Bootstrap(dn.ctx); err != nil {
+		return fmt.Errorf("failed to bootstrap DHT: %w", err)
+	}
+
+	// Connect to bootstrap peers
+	for _, peerAddr := range dn.node.Config.BootstrapPeers {
+		ma, err := multiaddr.NewMultiaddr(peerAddr)
+		if err != nil {
+			return fmt.Errorf("failed to bootstrap DHT: %w", err)
+		}
+
+		addrInfo, err := peer.AddrInfoFromP2pAddr(ma)
+		if err != nil {
+			log.Printf("Failed to parse peer info from %s: %v", peerAddr, err)
+			continue
+		}
+
+		connectCtx, cancel := context.WithTimeout(dn.ctx, 10*time.Second)
+		defer cancel()
+
+		if err := dn.node.Host.Connect(connectCtx, *addrInfo); err != nil {
+			log.Printf("Failed to connect to bootstrap peer %s: %v", peerAddr, err)
+			continue
+		}
+
+		log.Printf("Connected to bootstrap peer: %s", addrInfo.ID)
+	}
+
+	return nil
+}
+
+// maintainNetworkState maintains the network view and cleans up stale peers
+func (dn *DecentralizedNode) maintainNetworkState() {
+	ticker := time.NewTicker(2 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-dn.ctx.Done():
+			return
+		case <-ticker.C:
+			dn.cleanupStalePeers()
+			dn.updateNetworkMetrics()
+			dn.rebalanceStorage()
+		}
+	}
+}
+
+// cleanupStalePeers removes peers that haven't been seen recently
+func (dn *DecentralizedNode) cleanupStalePeers() {
+	dn.networkView.mu.Lock()
+	defer dn.networkView.mu.Unlock()
+
+	staleThreshold := time.Now().Add(-10 * time.Minute)
+	for peerID, peerInfo := range dn.networkView.peers {
+		if peerInfo.LastSeen.Before(staleThreshold) {
+			delete(dn.networkView.peers, peerID)
+			delete(dn.networkView.reputation, peerID)
+
+			// Remove from file index
+			for fileHash, peers := range dn.networkView.fileIndex {
+				updatedPeers := make([]peer.ID, 0)
+				for _, p := range peers {
+					if p != peerID {
+						updatedPeers = append(updatedPeers, p)
+					}
+				}
+				dn.networkView.fileIndex[fileHash] = updatedPeers
+			}
+
+			log.Printf("Removed stale peer: %s", peerID)
+		}
+	}
+}
+
+// updateNetworkMetrics updates network statistics
+func (dn *DecentralizedNode) updateNetworkMetrics() {
+	dn.networkView.mu.Lock()
+	defer dn.networkView.mu.Unlock()
+
+	dn.networkView.lastUpdated = time.Now()
+
+	// Get DHT metrics
+	routingTable := dn.dht.RoutingTable()
+	var dhtPeerCount int
+	if routingTable != nil {
+		dhtPeerCount = routingTable.Size()
+	}
+
+	log.Printf("Network view updated: %d peers known, %d in DHT routing table",
+		len(dn.networkView.peers), dhtPeerCount)
+}
+
+// rebalanceStorage checks if files need to be replicated
+func (dn *DecentralizedNode) rebalanceStorage() {
+	// Check file replication levels and trigger rebalancing if needed
+	dn.networkView.mu.RLock()
+	defer dn.networkView.mu.RUnlock()
+
+	for fileHash, peers := range dn.networkView.fileIndex {
+		if len(peers) < 3 { // Minimum replication factor
+			log.Printf("File %s has low replication (%d peers), triggering replication", fileHash, len(peers))
+			// In a real implementation, you'd trigger replication here
+		}
+	}
+}
+
+func (dn *DecentralizedNode) onPeerConnected(net network.Network, conn network.Conn) {
+	peerID := conn.RemotePeer()
+	log.Printf("Connected to peer: %s", peerID)
+
+	// Small reputation boost for successful connection
+	dn.reputation.UpdatePeer(peerID, 0.02)
+}
+
+// onPeerDisconnected handles peer disconnections
+func (dn *DecentralizedNode) onPeerDisconnected(net network.Network, conn network.Conn) {
+	peerID := conn.RemotePeer()
+	log.Printf("Disconnected from peer: %s", peerID)
+
+	// Small reputation penalty for disconnection
+	dn.reputation.UpdatePeer(peerID, -0.01)
+}
+
+func (dn *DecentralizedNode) Close() error {
+	dn.cancel()
+
+	// Close components in order
+	if dn.gossip != nil {
+		// Gossip cleanup would go here
+	}
+
+	if dn.discovery != nil {
+		// Discovery cleanup would go here
+	}
+
+	if dn.dht != nil {
+		if err := dn.dht.Close(); err != nil {
+			log.Printf("Error closing DHT: %v", err)
+		}
+	}
+
+	if dn.node != nil {
+		if err := dn.node.Close(); err != nil {
+			log.Printf("Error closing base node: %v", err)
+		}
+	}
+
+	log.Println("Decentralized node shutdown complete")
+	return nil
+}

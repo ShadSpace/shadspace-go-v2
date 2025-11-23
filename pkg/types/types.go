@@ -1,6 +1,7 @@
 package types
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -162,7 +163,7 @@ type ChunkLocation struct {
 type StorageOffer struct {
 	Message
 	ChunkHash string `json:"chunk_hash"`
-	Size      int    `json:"size"`
+	Size      uint64 `json:"size"`
 	Duration  int64  `json:"duration_seconds"`
 	Price     uint64 `json:"price,omitempty"`
 }
@@ -179,4 +180,25 @@ type ChunkResponse struct {
 	Data      []byte `json:"data"`
 	Error     string `json:"error,omitempty"`
 	Success   bool   `json:"success"`
+}
+
+type GossipMessageType string
+
+const (
+	GossipTypeNodeInfo         GossipMessageType = "node_info"
+	GossipTypeFileAnnounce     GossipMessageType = "file_announce"
+	GossipTypeReputationUpdate GossipMessageType = "reputation_update"
+)
+
+type GossipMessage struct {
+	Type      GossipMessageType `json:"type"`
+	PeerID    peer.ID           `json:"peer_id"`
+	Timestamp time.Time         `json:"timestamp"`
+	Payload   json.RawMessage   `json:"payload"`
+}
+
+// ToJSON converts FarmerInfo to JSON for gossip
+func (fi *FarmerInfo) ToJSON() json.RawMessage {
+	data, _ := json.Marshal(fi)
+	return data
 }

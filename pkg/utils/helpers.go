@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -93,4 +94,12 @@ func Contains(slice []string, item string) bool {
 // Helper function to round to 2 decimal places
 func RoundToTwoDecimals(num float64) float64 {
 	return float64(int(num*100)) / 100
+}
+
+func GetNodeAddresses(host host.Host) []string {
+	var addresses []string
+	for _, addr := range host.Addrs() {
+		addresses = append(addresses, fmt.Sprintf("%s/p2p/%s", addr, host.ID()))
+	}
+	return addresses
 }
