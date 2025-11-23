@@ -135,6 +135,7 @@ func NewDecentralizedNode(ctx context.Context, config NodeConfig) (*Decentralize
 	go dn.maintainNetworkState()
 	go dn.gossip.Start()
 	go dn.discovery.Start()
+	go dn.reputation.MonitorPeers()
 
 	log.Printf("Decentralized node initialized with ID: %s", baseNode.Host.ID())
 	return dn, nil
@@ -252,7 +253,20 @@ func (dn *DecentralizedNode) rebalanceStorage() {
 
 func (dn *DecentralizedNode) onPeerConnected(net network.Network, conn network.Conn) {
 	peerID := conn.RemotePeer()
-	log.Printf("Connected to peer: %s", peerID)
+
+	dn.networkView.mu.Lock()
+	defer dn.networkView.mu.Unlock()
+
+	// Check if we already have this peer to avoid duplicates
+	if _, exists := dn.networkView.peers[peerID]; !exists {
+		log.Printf("🔗 CONNECTED to peer: %s", peerID)
+		dn.networkView.peers[peerID] = &PeerInfo{
+			Info:        nil, // Will be populated via gossip
+			LastSeen:    time.Now(),
+			Reliability: 1.0,
+			Distance:    1,
+		}
+	}
 
 	// Small reputation boost for successful connection
 	dn.reputation.UpdatePeer(peerID, 0.02)
@@ -261,10 +275,18 @@ func (dn *DecentralizedNode) onPeerConnected(net network.Network, conn network.C
 // onPeerDisconnected handles peer disconnections
 func (dn *DecentralizedNode) onPeerDisconnected(net network.Network, conn network.Conn) {
 	peerID := conn.RemotePeer()
-	log.Printf("Disconnected from peer: %s", peerID)
+	dn.networkView.mu.Lock()
+	defer dn.networkView.mu.Unlock()
+
+	log.Printf("🔌 DISCONNECTED from peer: %s", peerID)
 
 	// Small reputation penalty for disconnection
 	dn.reputation.UpdatePeer(peerID, -0.01)
+
+	// Small reputation penalty for disconnection
+	dn.reputation.UpdatePeer(peerID, -0.01)
+	// Note: We don't remove the peer from network view immediately
+	// The cleanupStalePeers method will handle stale peers
 }
 
 func (dn *DecentralizedNode) Close() error {
