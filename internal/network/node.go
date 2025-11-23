@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/ShadSpace/shadspace-go-v2/internal/protocol"
+	"github.com/ShadSpace/shadspace-go-v2/internal/storage"
+	"github.com/ShadSpace/shadspace-go-v2/pkg/types"
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -16,7 +19,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
-	libp2pprotocol "github.com/libp2p/go-libp2p/core/protocol" // Renamed import
+	libp2pprotocol "github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/multiformats/go-multiaddr"
 )
 
@@ -34,12 +37,22 @@ type NodeConfig struct {
 
 // Node represents a base libp2p node with DHT and PubSub capabilities
 type Node struct {
-	Host    host.Host
-	DHT     *dht.IpfsDHT
-	PubSub  *pubsub.PubSub
-	Config  NodeConfig
-	ctx     context.Context
-	handler *protocol.MessageHandler
+	Host      host.Host
+	DHT       *dht.IpfsDHT
+	PubSub    *pubsub.PubSub
+	Config    NodeConfig
+	ctx       context.Context
+	handler   *protocol.MessageHandler
+	codec     *codec
+	fileStore FileStore // Interface for file storage operations
+	mu        sync.RWMutex
+}
+
+// FileStore defines the interface for file storage operations needed by protocol handlers
+type FileStore interface {
+	GetFileMetadata(fileHash string) (*storage.FileMetadata, error)
+	GetShard(fileHash string, shardIndex int) ([]byte, error)
+	GetFileStats() map[string]interface{}
 }
 
 // NewNode creates a new libp2p node with the given configuration
@@ -93,6 +106,7 @@ func NewNode(ctx context.Context, config NodeConfig) (*Node, error) {
 		Config:  config,
 		ctx:     ctx,
 		handler: protocol.NewMessageHandler(nil),
+		codec:   &codec{},
 	}
 
 	// Set up stream handlers
@@ -100,6 +114,10 @@ func NewNode(ctx context.Context, config NodeConfig) (*Node, error) {
 	h.SetStreamHandler(libp2pprotocol.ID(config.ProtocolID+"/storage"), node.handleStorageStream)
 	h.SetStreamHandler(libp2pprotocol.ID(config.ProtocolID+"/discovery"), node.handleDiscoveryStream)
 	h.SetStreamHandler(libp2pprotocol.ID(config.ProtocolID+"/proofofstorage"), node.handleProofOfStorageStream)
+
+	// Add file retrieval protocol handlers
+	h.SetStreamHandler("/shadspace/file-metadata/1.0.0", node.handleFileMetadataRequest)
+	h.SetStreamHandler("/shadspace/file-shard/1.0.0", node.handleShardRequest)
 
 	// Set connection handlers
 	h.Network().Notify(&network.NotifyBundle{
@@ -116,6 +134,84 @@ func NewNode(ctx context.Context, config NodeConfig) (*Node, error) {
 	log.Printf("Addresses: %v", h.Addrs())
 
 	return node, nil
+}
+
+// SetFileStore sets the file storage interface for protocol handlers
+func (n *Node) SetFileStore(store FileStore) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.fileStore = store
+}
+
+// Handle file metadata requests
+func (n *Node) handleFileMetadataRequest(stream network.Stream) {
+	defer stream.Close()
+
+	var request types.FileMetadataRequest
+	if err := n.codec.Decode(stream, &request); err != nil {
+		log.Printf("Failed to decode metadata request: %v", err)
+		return
+	}
+
+	log.Printf("Received file metadata request for: %s", request.FileHash)
+
+	response := types.FileMetadataResponse{}
+
+	n.mu.RLock()
+	fileStore := n.fileStore
+	n.mu.RUnlock()
+
+	if fileStore == nil {
+		response.Error = "file storage not available"
+	} else {
+		metadata, err := fileStore.GetFileMetadata(request.FileHash)
+		if err != nil {
+			response.Error = fmt.Sprintf("failed to get file metadata: %v", err)
+		} else {
+			response.Metadata = metadata
+			log.Printf("Sending file metadata for: %s", request.FileHash)
+		}
+	}
+
+	if err := n.codec.Encode(stream, response); err != nil {
+		log.Printf("Failed to send metadata response: %v", err)
+	}
+}
+
+// Handle shard requests
+func (n *Node) handleShardRequest(stream network.Stream) {
+	defer stream.Close()
+
+	var request types.ShardRequest
+	if err := n.codec.Decode(stream, &request); err != nil {
+		log.Printf("Failed to decode shard request: %v", err)
+		return
+	}
+
+	log.Printf("Received shard request for file %s, shard %d", request.FileHash, request.ShardIndex)
+
+	response := types.ShardResponse{}
+
+	n.mu.RLock()
+	fileStore := n.fileStore
+	n.mu.RUnlock()
+
+	if fileStore == nil {
+		response.Error = "file storage not available"
+	} else {
+		shardData, err := fileStore.GetShard(request.FileHash, request.ShardIndex)
+		if err != nil {
+			response.Error = fmt.Sprintf("failed to get shard: %v", err)
+		} else {
+			response.Data = shardData
+			log.Printf("Sending shard %d for file %s (%d bytes)",
+				request.ShardIndex, request.FileHash, len(shardData))
+		}
+	}
+
+	if err := n.codec.Encode(stream, response); err != nil {
+		log.Printf("Failed to send shard response: %v", err)
+	}
 }
 
 // bootstrap connects the node to bootstrap peers and initializes the DHT
@@ -262,6 +358,11 @@ func (n *Node) SetHandler(handler *protocol.MessageHandler) {
 	n.handler = handler
 }
 
+// GetCodec returns the codec instance for stream communication
+func (n *Node) GetCodec() *codec {
+	return n.codec
+}
+
 // Close gracefully shuts down the node
 func (n *Node) Close() error {
 	var errs []error
@@ -283,4 +384,15 @@ func (n *Node) Close() error {
 	}
 
 	return nil
+}
+
+// codec provides JSON encoding/decoding for stream communication
+type codec struct{}
+
+func (c *codec) Encode(w io.Writer, v interface{}) error {
+	return json.NewEncoder(w).Encode(v)
+}
+
+func (c *codec) Decode(r io.Reader, v interface{}) error {
+	return json.NewDecoder(r).Decode(v)
 }

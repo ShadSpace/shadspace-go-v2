@@ -53,7 +53,7 @@ func (sm *ShardManager) ShardData(data []byte, totalShards, requiredShards int) 
 	// Create shards from shares
 	shards := make([]Shard, totalShards)
 	for i, share := range shares {
-		shardHash := sm.calculateShardHash(share)
+		shardHash := sm.CalculateShardHash(share)
 		shards[i] = Shard{
 			Index: i + 1,
 			Data:  share,
@@ -130,7 +130,7 @@ func (sm *ShardManager) GetShardMetadata(fileHash string) (*ShardMetadata, bool)
 }
 
 // calculateShardHash calculates SHA256 hash of shard data
-func (sm *ShardManager) calculateShardHash(data []byte) string {
+func (sm *ShardManager) CalculateShardHash(data []byte) string {
 	hash := sha256.Sum256(data)
 	return hex.EncodeToString(hash[:])
 }

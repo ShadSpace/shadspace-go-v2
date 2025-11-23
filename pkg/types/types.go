@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/ShadSpace/shadspace-go-v2/internal/storage"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -231,4 +232,24 @@ type FileLocation struct {
 	ShardHashes []string  `json:"shard_hashes,omitempty"`
 	PeerIDs     []peer.ID `json:"peer_ids"`
 	Timestamp   time.Time `json:"timestamp"`
+}
+
+type FileMetadataRequest struct {
+	FileHash string `json:"file_hash"`
+}
+
+type FileMetadataResponse struct {
+	Metadata *storage.FileMetadata `json:"metadata,omitempty"`
+	Error    string                `json:"error,omitempty"`
+}
+
+// Shard request/response
+type ShardRequest struct {
+	FileHash   string `json:"file_hash"`
+	ShardIndex int    `json:"shard_index"`
+}
+
+type ShardResponse struct {
+	Data  []byte `json:"data,omitempty"`
+	Error string `json:"error,omitempty"`
 }

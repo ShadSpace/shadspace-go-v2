@@ -10,6 +10,7 @@ import (
 	"github.com/ShadSpace/shadspace-go-v2/pkg/types"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 type GossipManager struct {
@@ -88,8 +89,8 @@ func (gm *GossipManager) handleGossipMessage(msg *pubsub.Message) {
 	switch gossipMsg.Type {
 	case types.GossipTypeNodeInfo:
 		gm.handleNodeInfoMessage(gossipMsg)
-		// case types.GossipTypeFileAnnounce:
-		// 	gm.handleFileAnnounceMessage(gossipMsg)
+	case types.GossipTypeFileAnnounce:
+		gm.handleFileAnnounceMessage(gossipMsg)
 		// case types.GossipTypeReputationUpdate:
 		// 	gm.handleReputationMessage(gossipMsg)
 	}
@@ -124,6 +125,86 @@ func (gm *GossipManager) handleNodeInfoMessage(msg types.GossipMessage) {
 	gm.node.reputation.UpdatePeer(farmerInfo.PeerID, 0.1)
 
 }
+
+func (gm *GossipManager) handleFileAnnounceMessage(msg types.GossipMessage) {
+	var fileAnnounce types.FileAnnounceMessage
+	if err := json.Unmarshal(msg.Payload, &fileAnnounce); err != nil {
+		log.Printf("Failed to unmarshal file announcement: %v", err)
+		return
+	}
+
+	gm.node.networkView.mu.Lock()
+	defer gm.node.networkView.mu.Unlock()
+
+	// Update file index in network view
+	for _, location := range fileAnnounce.Locations {
+		// Add or update the file location
+		if _, exists := gm.node.networkView.fileIndex[location.FileHash]; !exists {
+			gm.node.networkView.fileIndex[location.FileHash] = make([]peer.ID, 0)
+		}
+
+		// Add the peer to the file index if not already present
+		existingPeers := gm.node.networkView.fileIndex[location.FileHash]
+		for _, peerID := range location.PeerIDs {
+			found := false
+			for _, existingPeer := range existingPeers {
+				if existingPeer == peerID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				existingPeers = append(existingPeers, peerID)
+			}
+		}
+		gm.node.networkView.fileIndex[location.FileHash] = existingPeers
+	}
+
+	log.Printf("Updated file index for %s: stored on %d peers",
+		fileAnnounce.Locations[0].FileHash,
+		len(gm.node.networkView.fileIndex[fileAnnounce.Locations[0].FileHash]))
+}
+
+func (gm *GossipManager) handleFileDeleteMessage(msg types.GossipMessage) {
+	var deleteMsg types.FileDeleteMessage
+	if err := json.Unmarshal(msg.Payload, &deleteMsg); err != nil {
+		log.Printf("Failed to unmarshal file deletion message: %v", err)
+		return
+	}
+
+	gm.node.networkView.mu.Lock()
+	defer gm.node.networkView.mu.Unlock()
+
+	// Remove file from network view
+	if peers, exists := gm.node.networkView.fileIndex[deleteMsg.FileHash]; exists {
+		// Remove this peer from the file's peer list
+		updatedPeers := make([]peer.ID, 0)
+		for _, peerID := range peers {
+			if peerID != deleteMsg.PeerID {
+				updatedPeers = append(updatedPeers, peerID)
+			}
+		}
+
+		if len(updatedPeers) == 0 {
+			delete(gm.node.networkView.fileIndex, deleteMsg.FileHash)
+			log.Printf("Removed file %s from network view (no more peers)", deleteMsg.FileHash)
+		} else {
+			gm.node.networkView.fileIndex[deleteMsg.FileHash] = updatedPeers
+			log.Printf("Updated file %s in network view: now on %d peers", deleteMsg.FileHash, len(updatedPeers))
+		}
+	}
+}
+
+// func (gm *GossipManager) handleReputationMessage(msg types.GossipMessage) {
+// 	var repMsg types.ReputationMessage
+// 	if err := json.Unmarshal(msg.Payload, &repMsg); err != nil {
+// 		log.Printf("Failed to unmarshal reputation message: %v", err)
+// 		return
+// 	}
+
+// 	// Update reputation based on network feedback
+// 	gm.node.reputation.UpdatePeer(repMsg.PeerID, repMsg.ScoreChange, repMsg.Reason)
+// }
 
 // broadcastNodeInfo broadcasts node information to the network
 func (gm *GossipManager) broadcastNodeInfo() {

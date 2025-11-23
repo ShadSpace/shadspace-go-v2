@@ -1,6 +1,7 @@
 package network
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"sync"
@@ -114,16 +115,222 @@ func (so *StorageOperations) RetrieveFileDistributed(fileHash string) ([]byte, e
 		return nil, fmt.Errorf("file %s not found in network", fileHash)
 	}
 
-	log.Printf("Found file %s on %d peers", fileHash, len(storingPeers))
+	log.Printf("Found file %s on %d peers: %v", fileHash, len(storingPeers), storingPeers)
 
-	// In a real implementation, we would:
-	// 1. Contact peers to retrieve shards
-	// 2. Reconstruct file from shards
-	// 3. Store locally for future access
+	// Get file metadata to understand sharding requirements
+	fileMetadata, err := so.getFileMetadataFromNetwork(fileHash, storingPeers)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get file metadata: %w", err)
+	}
 
-	// For now, return error since we don't have the actual shard transfer implemented
-	return nil, fmt.Errorf("distributed retrieval not yet implemented for file %s", fileHash)
+	log.Printf("File requires %d shards, %d needed for reconstruction",
+		fileMetadata.TotalShards, fileMetadata.RequiredShards)
+
+	// Retrieve shards from peers
+	shards, err := so.retrieveShardsFromPeers(fileHash, fileMetadata, storingPeers)
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve shards: %w", err)
+	}
+
+	log.Printf("Successfully retrieved %d/%d shards for file %s",
+		len(shards), fileMetadata.TotalShards, fileHash)
+
+	// Reconstruct the file
+	reconstructedData, err := so.fileManager.GetShardManager().ReconstructData(shards)
+	if err != nil {
+		return nil, fmt.Errorf("failed to reconstruct file: %w", err)
+	}
+
+	// Verify file integrity
+	calculatedHash := so.fileManager.CalculateFileHash(reconstructedData)
+	if calculatedHash != fileHash {
+		return nil, fmt.Errorf("file integrity check failed: expected %s, got %s",
+			fileHash, calculatedHash)
+	}
+
+	// Store locally for future access
+	if _, err := so.fileManager.StoreFile(
+		fileMetadata.FileName,
+		reconstructedData,
+		fileMetadata.TotalShards,
+		fileMetadata.RequiredShards,
+		[]peer.ID{so.node.node.Host.ID()}, // Store locally
+	); err != nil {
+		log.Printf("Warning: failed to cache file locally: %v", err)
+	}
+
+	log.Printf("✅ Successfully retrieved and reconstructed file %s (%d bytes)",
+		fileHash, len(reconstructedData))
+
+	return reconstructedData, nil
 }
+
+func (so *StorageOperations) getFileMetadataFromNetwork(fileHash string, storingPeers []peer.ID) (*storage.FileMetadata, error) {
+	for _, peerID := range storingPeers {
+		metadata, err := so.requestFileMetadata(peerID, fileHash)
+		if err == nil {
+			return metadata, nil
+		}
+		log.Printf("Failed to get metadata from peer %s: %v", peerID, err)
+	}
+	return nil, fmt.Errorf("failed to get file metadata from any peer")
+}
+
+// requestFileMetadata requests file metadata from a specific peer
+func (so *StorageOperations) requestFileMetadata(peerID peer.ID, fileHash string) (*storage.FileMetadata, error) {
+	ctx, cancel := context.WithTimeout(so.node.ctx, 10*time.Second)
+	defer cancel()
+
+	stream, err := so.node.node.Host.NewStream(ctx, peerID, "/shadspace/file-metadata/1.0.0")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create stream: %w", err)
+	}
+	defer stream.Close()
+
+	// Send request
+	request := types.FileMetadataRequest{FileHash: fileHash}
+	if err := so.node.node.codec.Encode(stream, request); err != nil {
+		return nil, fmt.Errorf("failed to send metadata request: %w", err)
+	}
+
+	// Receive response
+	var response types.FileMetadataResponse
+	if err := so.node.node.codec.Decode(stream, &response); err != nil {
+		return nil, fmt.Errorf("failed to receive metadata response: %w", err)
+	}
+
+	if response.Error != "" {
+		return nil, fmt.Errorf("peer returned error: %s", response.Error)
+	}
+
+	return response.Metadata, nil
+}
+
+// retrieveShardsFromPeers retrieves shards from multiple peers
+func (so *StorageOperations) retrieveShardsFromPeers(fileHash string, metadata *storage.FileMetadata, storingPeers []peer.ID) ([]storage.Shard, error) {
+	type shardResult struct {
+		shard storage.Shard
+		index int
+		err   error
+	}
+
+	// Create a channel to collect shard results
+	resultChan := make(chan shardResult, metadata.TotalShards)
+	var wg sync.WaitGroup
+
+	// Try to retrieve each shard
+	for shardIndex := 1; shardIndex <= metadata.TotalShards; shardIndex++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+
+			shard, err := so.retrieveShardFromPeers(fileHash, index, metadata.ShardHashes[index-1], storingPeers)
+			resultChan <- shardResult{
+				shard: shard,
+				index: index,
+				err:   err,
+			}
+		}(shardIndex)
+	}
+
+	// Wait for all shard retrieval attempts to complete
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// Collect successful shards
+	shards := make([]storage.Shard, 0, metadata.TotalShards)
+	shardMap := make(map[int]storage.Shard)
+
+	for result := range resultChan {
+		if result.err == nil {
+			shardMap[result.index] = result.shard
+			shards = append(shards, result.shard)
+			log.Printf("Retrieved shard %d for file %s", result.index, fileHash)
+		} else {
+			log.Printf("Failed to retrieve shard %d: %v", result.index, result.err)
+		}
+	}
+
+	// Check if we have enough shards for reconstruction
+	if len(shards) < metadata.RequiredShards {
+		return nil, fmt.Errorf("insufficient shards retrieved: have %d, need %d",
+			len(shards), metadata.RequiredShards)
+	}
+
+	// Ensure shards are in correct order
+	orderedShards := make([]storage.Shard, 0, len(shards))
+	for i := 1; i <= metadata.TotalShards; i++ {
+		if shard, exists := shardMap[i]; exists {
+			orderedShards = append(orderedShards, shard)
+		}
+	}
+
+	return orderedShards, nil
+}
+
+// retrieveShardFromPeers attempts to retrieve a specific shard from multiple peers
+func (so *StorageOperations) retrieveShardFromPeers(fileHash string, shardIndex int, shardHash string, storingPeers []peer.ID) (storage.Shard, error) {
+	// Try peers in order until we succeed
+	for _, peerID := range storingPeers {
+		shard, err := so.requestShardFromPeer(peerID, fileHash, shardIndex, shardHash)
+		if err == nil {
+			return shard, nil
+		}
+		log.Printf("Failed to get shard %d from peer %s: %v", shardIndex, peerID, err)
+	}
+	return storage.Shard{}, fmt.Errorf("failed to retrieve shard %d from any peer", shardIndex)
+}
+
+func (so *StorageOperations) requestShardFromPeer(peerID peer.ID, fileHash string, shardIndex int, expectedHash string) (storage.Shard, error) {
+	ctx, cancel := context.WithTimeout(so.node.ctx, 15*time.Second)
+	defer cancel()
+
+	stream, err := so.node.node.Host.NewStream(ctx, peerID, "/shadspace/file-shard/1.0.0")
+	if err != nil {
+		return storage.Shard{}, fmt.Errorf("failed to create stream: %w", err)
+	}
+	defer stream.Close()
+
+	// Send shard request
+	request := types.ShardRequest{
+		FileHash:   fileHash,
+		ShardIndex: shardIndex,
+	}
+	if err := so.node.node.codec.Encode(stream, request); err != nil {
+		return storage.Shard{}, fmt.Errorf("failed to send shard request: %w", err)
+	}
+
+	// Receive shard response
+	var response types.ShardResponse
+	if err := so.node.node.codec.Decode(stream, &response); err != nil {
+		return storage.Shard{}, fmt.Errorf("failed to receive shard response: %w", err)
+	}
+
+	if response.Error != "" {
+		return storage.Shard{}, fmt.Errorf("peer returned error: %s", response.Error)
+	}
+
+	// Verify shard hash
+	actualHash := so.fileManager.GetShardManager().CalculateShardHash(response.Data)
+	if actualHash != expectedHash {
+		return storage.Shard{}, fmt.Errorf("shard integrity check failed: expected %s, got %s",
+			expectedHash, actualHash)
+	}
+
+	return storage.Shard{
+		Index: shardIndex,
+		Data:  response.Data,
+		Hash:  actualHash,
+		Size:  len(response.Data),
+	}, nil
+}
+
+// // Add these helper methods to access shard manager
+// func (so *StorageOperations) GetShardManager() *storage.ShardManager {
+// 	return so.fileManager.ShardManager()
+// }
 
 // DeleteFileDistributed deletes a file from the network
 func (so *StorageOperations) DeleteFileDistributed(fileHash string) error {
@@ -209,6 +416,11 @@ func (so *StorageOperations) announceFileToNetwork(fileHash string, storagePeers
 		log.Printf("Failed to get file info for announcement: %v", err)
 		return
 	}
+
+	// Update local network view first
+	so.node.networkView.mu.Lock()
+	so.node.networkView.fileIndex[fileHash] = storagePeers
+	so.node.networkView.mu.Unlock()
 
 	// Create file announcement
 	fileAnnounce := types.FileAnnounceMessage{

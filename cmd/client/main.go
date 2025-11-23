@@ -79,9 +79,11 @@ func main() {
 		if *fileHash == "" {
 			log.Fatal("File hash is required for retrieve action")
 		}
+		testFileRetrieve(node, *fileHash)
 	case "list":
 		testListFiles(node)
-
+	case "stats":
+		testStorageStats(node)
 	default:
 		log.Fatalf("Unknown action: %s", *action)
 	}
@@ -102,22 +104,24 @@ func testFileUpload(node *network.DecentralizedNode, filePath string) {
 	fileName := filepath.Base(filePath)
 	log.Printf("File details: %s, size: %d bytes", fileName, len(data))
 
-	// Select some dummy peers for storage (in real scenario, these would be actual peers)
-	dummyPeers := []string{"peer1", "peer2", "peer3"}
-
-	// Convert to peer.ID (in real implementation, these would be actual peer IDs)
-	storagePeers := make([]string, len(dummyPeers))
-	copy(storagePeers, dummyPeers)
-
-	// Store the file
+	// Store the file - let the storage operations select peers automatically
 	startTime := time.Now()
 	fileHash, err := node.GetStorageOperations().StoreFileDistributed(fileName, data, 3, 2)
 	if err != nil {
-		log.Fatalf("Failed to store file: %v", err)
+		log.Printf("Distributed storage failed: %v", err)
+		log.Printf("Trying local storage as fallback...")
+
+		// Fallback to local storage
+		fileHash, err = node.GetFileManager().StoreFile(fileName, data, 3, 2, nil)
+		if err != nil {
+			log.Fatalf("Local storage also failed: %v", err)
+		}
+		log.Printf("✅ File stored locally (no suitable network peers available)")
+	} else {
+		log.Printf("✅ File stored distributed across network")
 	}
 
 	duration := time.Since(startTime)
-	log.Printf("✅ File uploaded successfully!")
 	log.Printf("   File Hash: %s", fileHash)
 	log.Printf("   File Name: %s", fileName)
 	log.Printf("   File Size: %d bytes", len(data))
@@ -145,6 +149,9 @@ func testFileUpload(node *network.DecentralizedNode, filePath string) {
 		log.Printf("   - Total Shards: %d", fileInfo.TotalShards)
 		log.Printf("   - Required Shards: %d", fileInfo.RequiredShards)
 		log.Printf("   - Stored Peers: %d", len(fileInfo.StoredPeers))
+		if len(fileInfo.StoredPeers) > 0 {
+			log.Printf("   - Peer IDs: %v", fileInfo.StoredPeers)
+		}
 	}
 }
 
@@ -154,6 +161,7 @@ func testFileRetrieve(node *network.DecentralizedNode, fileHash string) {
 
 	startTime := time.Now()
 	data, err := node.GetStorageOperations().RetrieveFileDistributed(fileHash)
+
 	if err != nil {
 		log.Fatalf("Failed to retrieve file: %v", err)
 	}

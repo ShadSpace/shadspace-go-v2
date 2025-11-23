@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -67,6 +69,20 @@ func NewDecentralizedNode(ctx context.Context, config NodeConfig) (*Decentralize
 		return nil, fmt.Errorf("failed to create base node: %w", err)
 	}
 
+	// Create storage director stracture
+	storageBaseDir := "./data"
+	nodeStorageDir := filepath.Join(storageBaseDir, "nodes", baseNode.Host.ID().String())
+	fileStorageDir := filepath.Join(storageBaseDir, "files", baseNode.Host.ID().String())
+
+	if err := os.MkdirAll(nodeStorageDir, 0755); err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to create node storage directory: %w", err)
+	}
+	if err := os.MkdirAll(fileStorageDir, 0755); err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to create file storage directory: %w", err)
+	}
+
 	// Initialize DHT for distribution hash table
 	dhtInstance, err := dht.New(nodeCtx, baseNode.Host, dht.Mode(dht.ModeAuto))
 	if err != nil {
@@ -81,13 +97,11 @@ func NewDecentralizedNode(ctx context.Context, config NodeConfig) (*Decentralize
 	}
 
 	// Initialize storage
-	storageEngine, err := storage.NewEngine()
+	storageEngine, err := storage.NewEngine(nodeStorageDir)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to create storage engine: %w", err)
 	}
-
-	shardManager := storage.NewShardManager()
 
 	// Create farmer info
 	farmerInfo := &types.FarmerInfo{
@@ -122,7 +136,11 @@ func NewDecentralizedNode(ctx context.Context, config NodeConfig) (*Decentralize
 		},
 	}
 
-	fileManager := storage.NewFileManager(storageEngine, shardManager)
+	fileManager, err := storage.NewFileManager(fileStorageDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	storageOps := NewStorageOperations(dn, fileManager)
 
 	dn.fileManager = fileManager
@@ -131,6 +149,9 @@ func NewDecentralizedNode(ctx context.Context, config NodeConfig) (*Decentralize
 	dn.gossip = NewGossipManager(baseNode.Host, ps, dn)
 	dn.discovery = NewPeerDiscovery(baseNode.Host, dhtInstance, dn)
 	dn.reputation = NewReputationSystem(dn)
+
+	// Set the decentralized node as the file store for protocol handlers
+	baseNode.SetFileStore(dn)
 
 	// Bootstrap the node
 	if err := dn.bootstrap(); err != nil {
@@ -142,7 +163,7 @@ func NewDecentralizedNode(ctx context.Context, config NodeConfig) (*Decentralize
 		DisconnectedF: dn.onPeerDisconnected,
 	})
 
-	// // Start background processes
+	// Start background processes
 	go dn.maintainNetworkState()
 	go dn.gossip.Start()
 	go dn.discovery.Start()
@@ -151,7 +172,101 @@ func NewDecentralizedNode(ctx context.Context, config NodeConfig) (*Decentralize
 
 	log.Printf("Decentralized node initialized with ID: %s", baseNode.Host.ID())
 	return dn, nil
+}
 
+// GetFileMetadata implements FileStore interface
+func (dn *DecentralizedNode) GetFileMetadata(fileHash string) (*storage.FileMetadata, error) {
+	return dn.fileManager.GetFileInfo(fileHash)
+}
+
+// GetShard implements FileStore interface
+func (dn *DecentralizedNode) GetShard(fileHash string, shardIndex int) ([]byte, error) {
+	shardID := fmt.Sprintf("%s_shard_%d", fileHash, shardIndex)
+	return dn.storage.RetrieveChunk(shardID)
+}
+
+// GetFileStats implements FileStore interface
+func (dn *DecentralizedNode) GetFileStats() map[string]interface{} {
+	return dn.fileManager.GetFileStats()
+}
+
+// GetShardManager returns the shard manager instance
+func (dn *DecentralizedNode) GetShardManager() *storage.ShardManager {
+	return dn.shardManager
+}
+
+// GetCodec returns the codec instance for stream communication
+func (dn *DecentralizedNode) GetCodec() *codec {
+	return dn.node.GetCodec()
+}
+
+// DebugNetworkView prints debug information about the network view
+func (dn *DecentralizedNode) DebugNetworkView() {
+	dn.networkView.mu.RLock()
+	defer dn.networkView.mu.RUnlock()
+
+	log.Printf("=== Network View Debug ===")
+	log.Printf("Total peers: %d", len(dn.networkView.peers))
+	log.Printf("Total files in index: %d", len(dn.networkView.fileIndex))
+
+	for fileHash, peers := range dn.networkView.fileIndex {
+		log.Printf("File %s: stored on %d peers %v", fileHash, len(peers), peers)
+	}
+	log.Printf("=== End Network View Debug ===")
+}
+
+// GetPeerInfo returns information about a specific peer
+func (dn *DecentralizedNode) GetPeerInfo(peerID peer.ID) (*PeerInfo, bool) {
+	dn.networkView.mu.RLock()
+	defer dn.networkView.mu.RUnlock()
+
+	info, exists := dn.networkView.peers[peerID]
+	return info, exists
+}
+
+// UpdateFileIndex updates the file index with new peer information
+func (dn *DecentralizedNode) UpdateFileIndex(fileHash string, peerID peer.ID) {
+	dn.networkView.mu.Lock()
+	defer dn.networkView.mu.Unlock()
+
+	if _, exists := dn.networkView.fileIndex[fileHash]; !exists {
+		dn.networkView.fileIndex[fileHash] = make([]peer.ID, 0)
+	}
+
+	// Check if peer is already in the list
+	peers := dn.networkView.fileIndex[fileHash]
+	for _, existingPeer := range peers {
+		if existingPeer == peerID {
+			return // Peer already exists
+		}
+	}
+
+	// Add peer to the list
+	dn.networkView.fileIndex[fileHash] = append(peers, peerID)
+	log.Printf("Updated file index: file %s now stored on %d peers", fileHash, len(dn.networkView.fileIndex[fileHash]))
+}
+
+// RemoveFileFromIndex removes a file from the network view
+func (dn *DecentralizedNode) RemoveFileFromIndex(fileHash string, peerID peer.ID) {
+	dn.networkView.mu.Lock()
+	defer dn.networkView.mu.Unlock()
+
+	if peers, exists := dn.networkView.fileIndex[fileHash]; exists {
+		updatedPeers := make([]peer.ID, 0)
+		for _, p := range peers {
+			if p != peerID {
+				updatedPeers = append(updatedPeers, p)
+			}
+		}
+
+		if len(updatedPeers) == 0 {
+			delete(dn.networkView.fileIndex, fileHash)
+			log.Printf("Removed file %s from network view (no more peers)", fileHash)
+		} else {
+			dn.networkView.fileIndex[fileHash] = updatedPeers
+			log.Printf("Updated file %s in network view: now on %d peers", fileHash, len(updatedPeers))
+		}
+	}
 }
 
 // bootstrap initializes the decentralized node
@@ -292,41 +407,11 @@ func (dn *DecentralizedNode) onPeerDisconnected(net network.Network, conn networ
 
 	log.Printf("🔌 DISCONNECTED from peer: %s", peerID)
 
-	// Small reputation penalty for disconnection
+	// Small reputation penalty for disconnection (remove duplicate line)
 	dn.reputation.UpdatePeer(peerID, -0.01)
 
-	// Small reputation penalty for disconnection
-	dn.reputation.UpdatePeer(peerID, -0.01)
 	// Note: We don't remove the peer from network view immediately
 	// The cleanupStalePeers method will handle stale peers
-}
-
-func (dn *DecentralizedNode) Close() error {
-	dn.cancel()
-
-	// Close components in order
-	if dn.gossip != nil {
-		// Gossip cleanup would go here
-	}
-
-	if dn.discovery != nil {
-		// Discovery cleanup would go here
-	}
-
-	if dn.dht != nil {
-		if err := dn.dht.Close(); err != nil {
-			log.Printf("Error closing DHT: %v", err)
-		}
-	}
-
-	if dn.node != nil {
-		if err := dn.node.Close(); err != nil {
-			log.Printf("Error closing base node: %v", err)
-		}
-	}
-
-	log.Println("Decentralized node shutdown complete")
-	return nil
 }
 
 // GetHostID returns the node's host ID
@@ -351,5 +436,65 @@ func (dn *DecentralizedNode) GetStorageEngine() *storage.Engine {
 
 // GetNetworkStats returns network statistics
 func (dn *DecentralizedNode) GetNetworkStats() map[string]interface{} {
-	return dn.GetNetworkStats()
+	dn.networkView.mu.RLock()
+	defer dn.networkView.mu.RUnlock()
+
+	stats := make(map[string]interface{})
+	stats["total_peers"] = len(dn.networkView.peers)
+	stats["known_files"] = len(dn.networkView.fileIndex)
+	stats["last_updated"] = dn.networkView.lastUpdated
+	stats["node_id"] = dn.node.Host.ID().String()
+
+	// Get DHT stats
+	routingTable := dn.dht.RoutingTable()
+	if routingTable != nil {
+		stats["dht_peers"] = routingTable.Size()
+	}
+
+	// Calculate average reputation
+	var totalRep float64
+	for _, rep := range dn.networkView.reputation {
+		totalRep += rep
+	}
+	if len(dn.networkView.reputation) > 0 {
+		stats["avg_reputation"] = totalRep / float64(len(dn.networkView.reputation))
+	} else {
+		stats["avg_reputation"] = 0.0
+	}
+
+	return stats
+}
+
+func (dn *DecentralizedNode) Close() error {
+	dn.cancel()
+
+	// Close components in order
+	if dn.fileManager != nil {
+		if err := dn.fileManager.Close(); err != nil {
+			log.Printf("Error closing file manager: %v", err)
+		}
+	}
+
+	if dn.gossip != nil {
+		// Gossip cleanup would go here
+	}
+
+	if dn.discovery != nil {
+		// Discovery cleanup would go here
+	}
+
+	if dn.dht != nil {
+		if err := dn.dht.Close(); err != nil {
+			log.Printf("Error closing DHT: %v", err)
+		}
+	}
+
+	if dn.node != nil {
+		if err := dn.node.Close(); err != nil {
+			log.Printf("Error closing base node: %v", err)
+		}
+	}
+
+	log.Println("Decentralized node shutdown complete")
+	return nil
 }
