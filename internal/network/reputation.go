@@ -111,23 +111,75 @@ func (rs *ReputationSystem) GetBestPeers(minScore float64, maxPeers int) []peer.
 
 	// Collect peers that meet minimum score requirement
 	for peerID, score := range rs.node.networkView.reputation {
-		if score >= minScore
-		scoredPeers = append(scoredPeers, peerScore{peerID , score})
+		if score >= minScore {
+			scoredPeers = append(scoredPeers, peerScore{peerID, score})
+		}
 	}
 
 	//  Sort by score (decending)
 	for i := 0; i < len(scoredPeers); i++ {
 		for j := i + 1; j < len(scoredPeers); j++ {
 			if scoredPeers[j].score > scoredPeers[i].score {
-				scoredPeers[i], scoredPeers[j] = scoredPeers[j], scoredPeers[i]			}
+				scoredPeers[i], scoredPeers[j] = scoredPeers[j], scoredPeers[i]
+			}
 		}
 	}
 
-	// return top peers 
+	// return top peers
 	result := make([]peer.ID, 0, maxPeers)
-	for i := 0; i < len(scoredPeers) && i < maxPeers;  i++ {
+	for i := 0; i < len(scoredPeers) && i < maxPeers; i++ {
 		result = append(result, scoredPeers[i].peerID)
 	}
 
 	return result
+}
+
+// RecordSuccessfulInteraction records a positive interaction with a peer
+func (rs *ReputationSystem) RecordSuccessfulInteraction(peerID peer.ID) {
+	rs.UpdatePeer(peerID, 0.05)
+
+	// Also update reliability in peer info
+	rs.node.networkView.mu.Lock()
+	if peerInfo, exists := rs.node.networkView.peers[peerID]; exists {
+		peerInfo.Reliability = min(1.0, peerInfo.Reliability+0.05)
+	}
+	rs.node.networkView.mu.Unlock()
+}
+
+// RecordFailedInteraction records a negative interaction with a peer
+func (rs *ReputationSystem) RecordFailedInteraction(peerID peer.ID) {
+	rs.UpdatePeer(peerID, -0.1)
+
+	// Also update reliability in peer info
+	rs.node.networkView.mu.Lock()
+	if peerInfo, exists := rs.node.networkView.peers[peerID]; exists {
+		peerInfo.Reliability = max(0.0, peerInfo.Reliability-0.1)
+	}
+	rs.node.networkView.mu.Unlock()
+}
+
+// GetPeerReliability returns the reliability score of a peer
+func (rs *ReputationSystem) GetPeerReliability(peerID peer.ID) float64 {
+	rs.node.networkView.mu.RLock()
+	defer rs.node.networkView.mu.RUnlock()
+
+	if peerInfo, exists := rs.node.networkView.peers[peerID]; exists {
+		return peerInfo.Reliability
+	}
+	return 0.5 // Default reliability for unknown peers
+}
+
+// Helper functions
+func min(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
 }
