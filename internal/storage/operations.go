@@ -36,6 +36,7 @@ type FileMetadata struct {
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 	MimeType       string
+	OriginalSize   int64
 }
 
 // NewFileManager creates a new file manager
@@ -115,6 +116,7 @@ func (fm *FileManager) StoreFile(fileName string, data []byte, totalShards, requ
 		StoredPeers:    storagePeers,
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
+		OriginalSize:   int64(len(data)),
 	}
 
 	// Shard the data
@@ -198,7 +200,7 @@ func (fm *FileManager) RetrieveFile(fileHash string) ([]byte, error) {
 		shardsRetrieved, metadata.TotalShards, fileHash)
 
 	// Reconstruct the file
-	data, err := fm.shardManager.ReconstructData(shards)
+	data, err := fm.shardManager.ReconstructData(shards, metadata.TotalShards, metadata.RequiredShards, int(metadata.OriginalSize))
 	if err != nil {
 		return nil, fmt.Errorf("failed to reconstruct file: %w", err)
 	}

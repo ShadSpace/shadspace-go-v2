@@ -72,7 +72,7 @@ func NewDecentralizedNode(ctx context.Context, config NodeConfig) (*Decentralize
 	// Create storage director stracture
 	storageBaseDir := "./data"
 	nodeStorageDir := filepath.Join(storageBaseDir, "nodes", baseNode.Host.ID().String())
-	fileStorageDir := filepath.Join(storageBaseDir, "files", baseNode.Host.ID().String())
+	fileStorageDir := nodeStorageDir
 
 	if err := os.MkdirAll(nodeStorageDir, 0755); err != nil {
 		cancel()
@@ -165,10 +165,35 @@ func NewDecentralizedNode(ctx context.Context, config NodeConfig) (*Decentralize
 
 	// Start background processes
 	go dn.maintainNetworkState()
-	go dn.gossip.Start()
+	// Start gossip synchronously to ensure the topic and subscription are initialized
+	if err := dn.gossip.Start(); err != nil {
+		log.Printf("Warning: failed to start gossip manager: %v", err)
+	}
 	go dn.discovery.Start()
 	go dn.reputation.MonitorPeers()
 	go storageOps.MonitorStorageOperations()
+
+	// Populate network view with locally stored files so other peers can discover them
+	// and so this node advertises its holdings even if gossip hasn't propagated yet.
+	localFiles := dn.fileManager.ListFiles()
+	if len(localFiles) > 0 {
+		dn.networkView.mu.Lock()
+		for _, meta := range localFiles {
+			if _, exists := dn.networkView.fileIndex[meta.FileHash]; !exists {
+				dn.networkView.fileIndex[meta.FileHash] = make([]peer.ID, 0)
+			}
+			// Add this node as a storing peer for the file
+			dn.networkView.fileIndex[meta.FileHash] = append(dn.networkView.fileIndex[meta.FileHash], baseNode.Host.ID())
+		}
+		dn.networkView.mu.Unlock()
+
+		// Announce local files via gossip so peers learn about them
+		go func() {
+			for _, meta := range localFiles {
+				storageOps.announceFileToNetwork(meta.FileHash, []peer.ID{baseNode.Host.ID()})
+			}
+		}()
+	}
 
 	log.Printf("Decentralized node initialized with ID: %s", baseNode.Host.ID())
 	return dn, nil

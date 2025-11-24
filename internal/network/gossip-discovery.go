@@ -247,5 +247,10 @@ func (gm *GossipManager) publishMessage(msg types.GossipMessage) error {
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
 
+	// Defensive check: ensure topic is initialized
+	if gm.topic == nil {
+		return fmt.Errorf("gossip topic not initialized")
+	}
+
 	return gm.topic.Publish(gm.node.ctx, data)
 }

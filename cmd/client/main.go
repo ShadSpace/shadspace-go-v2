@@ -172,12 +172,35 @@ func testFileRetrieve(node *network.DecentralizedNode, fileHash string) {
 	log.Printf("   File Size: %d bytes", len(data))
 	log.Printf("   Retrieval Time: %v", duration)
 
-	// Save retrieved file to disk for verification
-	outputPath := fmt.Sprintf("retrieved_%s.bin", fileHash[:8])
+	var outputPath string
+
+	// Create retrieved folder if it doesn't exist
+	retrievedDir := "retrieved"
+	if err := os.MkdirAll(retrievedDir, 0755); err != nil {
+		log.Printf("Warning: Failed to create retrieved directory: %v", err)
+		// Fallback to current directory
+		retrievedDir = "."
+	}
+
+	// Try to get file metadata to use the original filename
+	fileMetadata, err := node.GetFileManager().GetFileInfo(fileHash)
+	if err != nil {
+		log.Printf("Warning: Failed to get file metadata, using default name: %v", err)
+		outputPath = filepath.Join(retrievedDir, fmt.Sprintf("%s.bin", fileHash[:8]))
+	} else {
+		// Use the exact original filename in the retrieved folder
+		outputPath = filepath.Join(retrievedDir, fileMetadata.FileName)
+	}
+
 	if err := os.WriteFile(outputPath, data, 0644); err != nil {
 		log.Printf("Warning: Failed to save retrieved file: %v", err)
 	} else {
 		log.Printf("   Saved to: %s", outputPath)
+
+		// Show what the original file was called
+		if fileMetadata != nil {
+			log.Printf("   Original Name: %s", fileMetadata.FileName)
+		}
 	}
 
 	// Verify the retrieved data matches the expected hash

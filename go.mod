@@ -3,10 +3,13 @@ module github.com/ShadSpace/shadspace-go-v2
 go 1.24.4
 
 require (
+	github.com/gorilla/mux v1.8.0
+	github.com/klauspost/reedsolomon v1.12.5
 	github.com/libp2p/go-libp2p v0.32.2
 	github.com/libp2p/go-libp2p-kad-dht v0.24.3
 	github.com/libp2p/go-libp2p-pubsub v0.10.0
 	github.com/multiformats/go-multiaddr v0.12.0
+	github.com/rs/cors v1.11.1
 )
 
 require (
@@ -46,7 +49,7 @@ require (
 	github.com/jbenet/go-temp-err-catcher v0.1.0 // indirect
 	github.com/jbenet/goprocess v0.1.4 // indirect
 	github.com/klauspost/compress v1.17.2 // indirect
-	github.com/klauspost/cpuid/v2 v2.2.5 // indirect
+	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
 	github.com/koron/go-ssdp v0.0.4 // indirect
 	github.com/libp2p/go-buffer-pool v0.1.0 // indirect
 	github.com/libp2p/go-cidranger v1.1.0 // indirect
@@ -107,7 +110,7 @@ require (
 	golang.org/x/mod v0.13.0 // indirect
 	golang.org/x/net v0.17.0 // indirect
 	golang.org/x/sync v0.4.0 // indirect
-	golang.org/x/sys v0.15.0 // indirect
+	golang.org/x/sys v0.30.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
 	golang.org/x/tools v0.14.0 // indirect
 	gonum.org/v1/gonum v0.13.0 // indirect

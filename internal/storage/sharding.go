@@ -1,13 +1,14 @@
 package storage
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"log"
 	"sync"
 
-	"github.com/ShadSpace/shadspace-go-v2/internal/shamir"
+	"github.com/klauspost/reedsolomon"
 )
 
 // ShardManager manages data sharding and distribution
@@ -35,7 +36,8 @@ func NewShardManager() *ShardManager {
 	}
 }
 
-// ShardData splits data into shards using Shamir's Secret Sharing
+// ShardData splits data into shards using Reed–Solomon erasure coding.
+// totalShards = dataShards + parityShards. requiredShards == dataShards.
 func (sm *ShardManager) ShardData(data []byte, totalShards, requiredShards int) ([]Shard, error) {
 	if len(data) == 0 {
 		return nil, fmt.Errorf("data cannot be empty")
@@ -43,47 +45,94 @@ func (sm *ShardManager) ShardData(data []byte, totalShards, requiredShards int) 
 	if requiredShards > totalShards {
 		return nil, fmt.Errorf("required shards cannot exceed total shards")
 	}
+	if requiredShards <= 0 {
+		return nil, fmt.Errorf("required shards must be > 0")
+	}
 
-	// Split data using Shamir's Secret Sharing
-	shares, err := shamir.Split(data, totalShards, requiredShards)
+	dataShards := requiredShards
+	parityShards := totalShards - dataShards
+	if parityShards < 0 {
+		return nil, fmt.Errorf("invalid shard configuration")
+	}
+
+	enc, err := reedsolomon.New(dataShards, parityShards)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create reedsolomon encoder: %w", err)
+	}
+
+	// Split the data into equal sized slices (encoder will pad last piece)
+	shards, err := enc.Split(data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to split data: %w", err)
 	}
 
-	// Create shards from shares
-	shards := make([]Shard, totalShards)
-	for i, share := range shares {
-		shardHash := sm.CalculateShardHash(share)
-		shards[i] = Shard{
+	// Encode parity
+	if err := enc.Encode(shards); err != nil {
+		return nil, fmt.Errorf("failed to encode parity shards: %w", err)
+	}
+
+	// Wrap shards into our Shard type with hashes
+	out := make([]Shard, len(shards))
+	for i := range shards {
+		shardHash := sm.CalculateShardHash(shards[i])
+		out[i] = Shard{
 			Index: i + 1,
-			Data:  share,
+			Data:  shards[i],
 			Hash:  shardHash,
-			Size:  len(share),
+			Size:  len(shards[i]),
 		}
 	}
 
-	return shards, nil
+	return out, nil
 }
 
-// ReconstructData reconstructs original data from shards
-func (sm *ShardManager) ReconstructData(shards []Shard) ([]byte, error) {
+// ReconstructData reconstructs original data from shards using Reed–Solomon.
+func (sm *ShardManager) ReconstructData(shards []Shard, totalShards, requiredShards, outputSize int) ([]byte, error) {
 	if len(shards) == 0 {
 		return nil, fmt.Errorf("no shards provided")
 	}
-
-	// Extract share data from shards
-	shares := make([][]byte, len(shards))
-	for i, shard := range shards {
-		shares[i] = shard.Data
+	if requiredShards > totalShards {
+		return nil, fmt.Errorf("required shards cannot exceed total shards")
 	}
 
-	// Reconstruct using Shamir's Secret Sharing
-	data, err := shamir.Combine(shares)
+	dataShards := requiredShards
+	parityShards := totalShards - dataShards
+
+	enc, err := reedsolomon.New(dataShards, parityShards)
 	if err != nil {
-		return nil, fmt.Errorf("failed to reconstruct data: %w", err)
+		return nil, fmt.Errorf("failed to create reedsolomon encoder: %w", err)
 	}
 
-	return data, nil
+	// Build [][]byte array for encoder
+	raw := make([][]byte, totalShards)
+	present := 0
+
+	for i := 0; i < totalShards; i++ {
+		if i < len(shards) && len(shards[i].Data) > 0 {
+			raw[i] = shards[i].Data
+			present++
+		} else {
+			raw[i] = nil
+		}
+	}
+
+	if present < dataShards {
+		return nil, fmt.Errorf("insufficient shards to reconstruct: have %d, need %d", present, dataShards)
+	}
+
+	// Reconstruct missing shards
+	if err := enc.Reconstruct(raw); err != nil {
+		return nil, fmt.Errorf("reedsolomon reconstruct failed: %w", err)
+	}
+
+	// Use a bytes.Buffer as the io.Writer for Join with exact output size
+	var buf bytes.Buffer
+	err = enc.Join(&buf, raw, outputSize)
+	if err != nil {
+		return nil, fmt.Errorf("reedsolomon join failed: %w", err)
+	}
+
+	return buf.Bytes(), nil
 }
 
 // StoreShardedFile stores a file by sharding it and distributing to farmers
@@ -96,6 +145,11 @@ func (sm *ShardManager) StoreShardedFile(fileHash string, data []byte, totalShar
 
 	// Store shard metadata
 	shardHashes := make([]string, len(shards))
+	var shardSize int
+	if len(shards) > 0 {
+		shardSize = shards[0].Size // Use the Size field from Shard struct
+	}
+
 	for i, shard := range shards {
 		shardHashes[i] = shard.Hash
 		sm.chunkToShard[shard.Hash] = fileHash
@@ -105,7 +159,7 @@ func (sm *ShardManager) StoreShardedFile(fileHash string, data []byte, totalShar
 		FileHash:       fileHash,
 		TotalShards:    totalShards,
 		RequiredShards: requiredShards,
-		ShardSize:      len(data) / requiredShards,
+		ShardSize:      shardSize,
 		ShardHashes:    shardHashes,
 		FarmerPeers:    farmerPeers[:totalShards], // Assign farmers to shards
 	}
@@ -129,7 +183,7 @@ func (sm *ShardManager) GetShardMetadata(fileHash string) (*ShardMetadata, bool)
 	return metadata, exists
 }
 
-// calculateShardHash calculates SHA256 hash of shard data
+// CalculateShardHash calculates SHA256 hash of shard data
 func (sm *ShardManager) CalculateShardHash(data []byte) string {
 	hash := sha256.Sum256(data)
 	return hex.EncodeToString(hash[:])
