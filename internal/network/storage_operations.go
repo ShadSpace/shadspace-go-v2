@@ -481,7 +481,7 @@ func (so *StorageOperations) announceFileToNetwork(fileHash string, storagePeers
 		Payload:   payload,
 	}
 
-	if err := so.node.gossip.publishMessage(msg); err != nil {
+	if err := so.node.gossip.PublishMessage(msg); err != nil {
 		log.Printf("Failed to announce file to network: %v", err)
 	} else {
 		log.Printf("File %s announced to network", fileHash)
@@ -509,7 +509,7 @@ func (so *StorageOperations) announceFileDeletion(fileHash string) {
 		Payload:   payload,
 	}
 
-	if err := so.node.gossip.publishMessage(msg); err != nil {
+	if err := so.node.gossip.PublishMessage(msg); err != nil {
 		log.Printf("Failed to announce file deletion: %v", err)
 	} else {
 		log.Printf("File %s deletion announced to network", fileHash)

@@ -91,6 +91,8 @@ func (gm *GossipManager) handleGossipMessage(msg *pubsub.Message) {
 		gm.handleNodeInfoMessage(gossipMsg)
 	case types.GossipTypeFileAnnounce:
 		gm.handleFileAnnounceMessage(gossipMsg)
+	case types.GossipTypeValidatorUpdate:
+		gm.handleValidatorUpdateMessage(gossipMsg)
 		// case types.GossipTypeReputationUpdate:
 		// 	gm.handleReputationMessage(gossipMsg)
 	}
@@ -165,6 +167,29 @@ func (gm *GossipManager) handleFileAnnounceMessage(msg types.GossipMessage) {
 		len(gm.node.networkView.fileIndex[fileAnnounce.Locations[0].FileHash]))
 }
 
+// handleValidatorUpdateMessage processes validator committee updates
+func (gm *GossipManager) handleValidatorUpdateMessage(msg types.GossipMessage) {
+	var validatorUpdate types.ValidatorUpdateMessage
+	if err := json.Unmarshal(msg.Payload, &validatorUpdate); err != nil {
+		log.Printf("Failed to unmarshal validator update: %v", err)
+		return
+	}
+
+	log.Printf("Received validator committee update for cycle %d with %d validators",
+		validatorUpdate.CycleID, len(validatorUpdate.Validators))
+
+	// In a full implementation, you would:
+	// 1. Verify the signature
+	// 2. Validate the committee
+	// 3. Update local validator state
+	// 4. Trigger consensus layer updates
+
+	// For now, just log the update
+	for i, validator := range validatorUpdate.Validators {
+		log.Printf("Remote committee member %d: %s", i+1, validator.PeerID.String()[:8]+"...")
+	}
+}
+
 func (gm *GossipManager) handleFileDeleteMessage(msg types.GossipMessage) {
 	var deleteMsg types.FileDeleteMessage
 	if err := json.Unmarshal(msg.Payload, &deleteMsg); err != nil {
@@ -232,7 +257,7 @@ func (gm *GossipManager) broadcastNodeInfo() {
 				Payload:   farmerInfo.ToJSON(),
 			}
 
-			if err := gm.publishMessage(msg); err != nil {
+			if err := gm.PublishMessage(msg); err != nil {
 				log.Printf("Failed to broadcast node info: %v", err)
 			}
 
@@ -240,8 +265,8 @@ func (gm *GossipManager) broadcastNodeInfo() {
 	}
 }
 
-// publishMessage publishes a gossip message
-func (gm *GossipManager) publishMessage(msg types.GossipMessage) error {
+// PublishMessage publishes a gossip message
+func (gm *GossipManager) PublishMessage(msg types.GossipMessage) error {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("failed to marshal message: %w", err)

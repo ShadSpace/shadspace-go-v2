@@ -439,9 +439,40 @@ func (dn *DecentralizedNode) onPeerDisconnected(net network.Network, conn networ
 	// The cleanupStalePeers method will handle stale peers
 }
 
+// WithReadLock executes a function with read lock held
+func (nv *NetworkView) WithReadLock(f func()) {
+	nv.mu.RLock()
+	defer nv.mu.RUnlock()
+	f()
+}
+
+// WithWriteLock executes a function with write lock held
+func (nv *NetworkView) WithWriteLock(f func()) {
+	nv.mu.Lock()
+	defer nv.mu.Unlock()
+	f()
+}
+
+// GetPeers returns a copy of the peers map (thread-safe)
+func (nv *NetworkView) GetPeers() map[peer.ID]*PeerInfo {
+	nv.mu.RLock()
+	defer nv.mu.RUnlock()
+
+	// Return a copy to avoid external modification
+	peersCopy := make(map[peer.ID]*PeerInfo)
+	for k, v := range nv.peers {
+		peersCopy[k] = v
+	}
+	return peersCopy
+}
+
 // GetHostID returns the node's host ID
 func (dn *DecentralizedNode) GetHostID() string {
 	return dn.node.Host.ID().String()
+}
+
+func (dn *DecentralizedNode) Node() *Node {
+	return dn.node
 }
 
 // GetStorageOperations returns the storage operations instance
@@ -457,6 +488,21 @@ func (dn *DecentralizedNode) GetFileManager() *storage.FileManager {
 // GetStorageEngine returns the storage engine instance
 func (dn *DecentralizedNode) GetStorageEngine() *storage.Engine {
 	return dn.storage
+}
+
+// GetNetworkView returns the network view for the dn node
+func (dn *DecentralizedNode) NetworkView() *NetworkView {
+	return dn.networkView
+}
+
+// GetReputation returns a copy of the reputation map (thread-safe)
+func (dn *DecentralizedNode) GetReputation() *ReputationSystem {
+	return dn.reputation
+}
+
+// GossipManager returns the gossip manager instance
+func (dn *DecentralizedNode) GossipManager() *GossipManager {
+	return dn.gossip
 }
 
 // GetNetworkStats returns network statistics

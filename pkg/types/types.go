@@ -190,6 +190,7 @@ const (
 	GossipTypeFileAnnounce     GossipMessageType = "file_announce"
 	GossipTypeReputationUpdate GossipMessageType = "reputation_update"
 	GossipTypeFileDelete       GossipMessageType = "file_delete"
+	GossipTypeValidatorUpdate  GossipMessageType = "validator_update"
 )
 
 type GossipMessage struct {
@@ -252,4 +253,22 @@ type ShardRequest struct {
 type ShardResponse struct {
 	Data  []byte `json:"data,omitempty"`
 	Error string `json:"error,omitempty"`
+}
+
+// ValidatorInfo represents validator information for network transmission
+type ValidatorInfo struct {
+	PeerID      peer.ID `json:"peer_id"`
+	StakeAmount string  `json:"stake_amount"` // String for big.Int serialization
+	Reputation  float64 `json:"reputation"`
+	Weight      float64 `json:"weight"`
+	IsActive    bool    `json:"is_active"`
+}
+
+// ValidatorUpdateMessage represents a validator committee update
+type ValidatorUpdateMessage struct {
+	CycleID    uint64          `json:"cycle_id"`
+	Validators []ValidatorInfo `json:"validators"`
+	StartTime  time.Time       `json:"start_time"`
+	EndTime    time.Time       `json:"end_time"`
+	Signature  []byte          `json:"signature"` // For future signing implementation
 }
