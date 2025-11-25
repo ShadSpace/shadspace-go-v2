@@ -34,6 +34,9 @@ type DecentralizedNode struct {
 	discovery  *PeerDiscovery
 	reputation *ReputationSystem
 
+	// Consensus components
+	posManager *PoSManager
+
 	// Distributed state
 	farmerInfo  *types.FarmerInfo
 	networkView *NetworkView
@@ -149,6 +152,7 @@ func NewDecentralizedNode(ctx context.Context, config NodeConfig) (*Decentralize
 	dn.gossip = NewGossipManager(baseNode.Host, ps, dn)
 	dn.discovery = NewPeerDiscovery(baseNode.Host, dhtInstance, dn)
 	dn.reputation = NewReputationSystem(dn)
+	dn.posManager = NewPoSManager(dn)
 
 	// Set the decentralized node as the file store for protocol handlers
 	baseNode.SetFileStore(dn)
@@ -169,6 +173,14 @@ func NewDecentralizedNode(ctx context.Context, config NodeConfig) (*Decentralize
 	if err := dn.gossip.Start(); err != nil {
 		log.Printf("Warning: failed to start gossip manager: %v", err)
 	}
+
+	// Start PoSManager (this starts all consensus components)
+	if err := dn.posManager.Start(); err != nil {
+		log.Printf("Warning: failed to start PoS manager: %v", err)
+	} else {
+		log.Printf("✅ Consensus system started successfully")
+	}
+
 	go dn.discovery.Start()
 	go dn.reputation.MonitorPeers()
 	go storageOps.MonitorStorageOperations()
@@ -471,6 +483,11 @@ func (dn *DecentralizedNode) GetHostID() string {
 	return dn.node.Host.ID().String()
 }
 
+// GetPeerID returns the node's peer ID
+func (dn *DecentralizedNode) GetPeerID() peer.ID {
+	return dn.node.Host.ID()
+}
+
 func (dn *DecentralizedNode) Node() *Node {
 	return dn.node
 }
@@ -503,6 +520,15 @@ func (dn *DecentralizedNode) GetReputation() *ReputationSystem {
 // GossipManager returns the gossip manager instance
 func (dn *DecentralizedNode) GossipManager() *GossipManager {
 	return dn.gossip
+}
+
+// Ctx returns the context for the decentralized node
+func (dn *DecentralizedNode) Ctx() context.Context {
+	return dn.ctx
+}
+
+func (dn *DecentralizedNode) GetPoSManager() *PoSManager {
+	return dn.posManager
 }
 
 // GetNetworkStats returns network statistics

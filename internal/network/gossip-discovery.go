@@ -266,7 +266,7 @@ func (gm *GossipManager) broadcastNodeInfo() {
 }
 
 // PublishMessage publishes a gossip message
-func (gm *GossipManager) PublishMessage(msg types.GossipMessage) error {
+func (gm *GossipManager) PublishMessage(msg interface{}) error {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("failed to marshal message: %w", err)

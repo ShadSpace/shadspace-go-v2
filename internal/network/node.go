@@ -118,6 +118,7 @@ func NewNode(ctx context.Context, config NodeConfig) (*Node, error) {
 	// Add file retrieval protocol handlers
 	h.SetStreamHandler("/shadspace/file-metadata/1.0.0", node.handleFileMetadataRequest)
 	h.SetStreamHandler("/shadspace/file-shard/1.0.0", node.handleShardRequest)
+	h.SetStreamHandler("/shardspace/proof/1.0.0", node.handleProofVerificationStream)
 
 	// Set connection handlers
 	h.Network().Notify(&network.NotifyBundle{
@@ -212,6 +213,13 @@ func (n *Node) handleShardRequest(stream network.Stream) {
 	if err := n.codec.Encode(stream, response); err != nil {
 		log.Printf("Failed to send shard response: %v", err)
 	}
+}
+
+func (n *Node) handleProofVerificationStream(s network.Stream) {
+	defer s.Close()
+	log.Printf("Received proof verification stream from %s", s.Conn().RemotePeer())
+	// The actual processing will be done by the registered stream handler
+	// in the ProofVerifier, which uses the same protocol ID
 }
 
 // bootstrap connects the node to bootstrap peers and initializes the DHT

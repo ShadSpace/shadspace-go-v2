@@ -257,11 +257,14 @@ type ShardResponse struct {
 
 // ValidatorInfo represents validator information for network transmission
 type ValidatorInfo struct {
-	PeerID      peer.ID `json:"peer_id"`
-	StakeAmount string  `json:"stake_amount"` // String for big.Int serialization
-	Reputation  float64 `json:"reputation"`
-	Weight      float64 `json:"weight"`
-	IsActive    bool    `json:"is_active"`
+	PeerID          peer.ID `json:"peer_id"`
+	StakeAmount     string  `json:"stake_amount"` // String for big.Int serialization
+	Reputation      float64 `json:"reputation"`
+	Weight          float64 `json:"weight"`
+	IsActive        bool    `json:"is_active"`
+	ProofsVerified  uint64  `json:"proofs_verified"`
+	Availability    float64 `json:"availability"`
+	AvgResponseTime int64   `json:"avg_response_time"`
 }
 
 // ValidatorUpdateMessage represents a validator committee update
@@ -271,4 +274,30 @@ type ValidatorUpdateMessage struct {
 	StartTime  time.Time       `json:"start_time"`
 	EndTime    time.Time       `json:"end_time"`
 	Signature  []byte          `json:"signature"` // For future signing implementation
+}
+
+type GatewayInfo struct {
+	PeerID         peer.ID   `json:"peer_id"`
+	NodeName       string    `json:"node_name"`
+	APIPort        int       `json:"api_port"`
+	NodePort       int       `json:"node_port"`
+	Version        string    `json:"version"`
+	IsActive       bool      `json:"is_active"`
+	StartTime      time.Time `json:"start_time"`
+	LastSeen       time.Time `json:"last_seen"`
+	ConnectedPeers int       `json:"connected_peers"`
+	TotalRequests  int64     `json:"total_requests"`
+	Uptime         string    `json:"uptime,omitempty"`
+}
+
+type NodeInfo struct {
+	ID              string    `json:"id"`
+	NodeType        string    `json:"node_type"` // "gateway", "farmer", "validator"
+	IsActive        bool      `json:"is_active"`
+	StorageCapacity uint64    `json:"storage_capacity"`
+	UsedStorage     uint64    `json:"used_storage"`
+	Reliability     float64   `json:"reliability"`
+	LastSeen        time.Time `json:"last_seen"`
+	Addresses       []string  `json:"addresses,omitempty"`
+	Tags            []string  `json:"tags,omitempty"`
 }
