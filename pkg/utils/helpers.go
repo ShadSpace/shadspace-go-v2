@@ -103,3 +103,11 @@ func GetNodeAddresses(host host.Host) []string {
 	}
 	return addresses
 }
+
+func GenerateTemporaryKey() (crypto.PrivKey, error) {
+	privKey, _, err := crypto.GenerateKeyPair(crypto.Ed25519, -1)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate temporary key: %w", err)
+	}
+	return privKey, nil
+}

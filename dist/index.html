@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ShadSpace SDK Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+        .status.initialized {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .status.error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .status.loading {
+            background-color: #fff3cd;
+            color: #856404;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        button:hover:not(:disabled) {
+            background-color: #0056b3;
+        }
+        .file-input {
+            margin: 10px 0;
+        }
+        .results {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            font-family: monospace;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .section {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+        }
+        .dependency {
+            margin: 5px 0;
+            padding: 5px;
+            border-radius: 3px;
+        }
+        .dependency.ok {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .dependency.error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .dependency.warning {
+            background-color: #fff3cd;
+            color: #856404;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>ShadSpace SDK Test</h1>
+        
+        <div id="status" class="status loading">
+            Initializing...
+        </div>
+
+        <div class="section">
+            <h3>Dependencies</h3>
+            <div id="dependencies">
+                <div class="dependency">Checking dependencies...</div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h3>Node Information</h3>
+            <div id="nodeInfo">Waiting for initialization...</div>
+        </div>
+
+        <div class="section">
+            <h3>File Operations</h3>
+            <input type="file" id="fileInput" class="file-input">
+            <button onclick="uploadFile()" id="uploadBtn" disabled>Upload File</button>
+            <button onclick="listFiles()" id="listBtn" disabled>List Files</button>
+        </div>
+
+        <div class="section">
+            <h3>Network Operations</h3>
+            <button onclick="getNetworkStats()" id="statsBtn" disabled>Get Network Stats</button>
+            <input type="text" id="fileHashInput" placeholder="File hash for download">
+            <button onclick="downloadFile()" id="downloadBtn" disabled>Download File</button>
+        </div>
+
+        <div class="section">
+            <h3>Results</h3>
+            <div id="results" class="results">No operations performed yet.</div>
+        </div>
+    </div>
+
+    <!-- Load scripts in correct order -->
+    <script src="wasm_exec.js"></script>
+    <script src="wasm-loader.js"></script>
+    <script src="shadspace-sdk.js"></script>
+    
+    <script>
+        let sdk = null;
+        let wasmReady = false;
+
+        // Check all dependencies
+        function checkDependencies() {
+            const depsEl = document.getElementById('dependencies');
+            const dependencies = [
+                { 
+                    name: 'WebAssembly Support', 
+                    check: () => typeof WebAssembly !== 'undefined', 
+                    required: true,
+                    message: 'Your browser supports WebAssembly'
+                },
+                { 
+                    name: 'Go Runtime', 
+                    check: () => typeof Go !== 'undefined', 
+                    required: true,
+                    message: 'Go WASM runtime loaded'
+                },
+                { 
+                    name: 'WASM Loader', 
+                    check: () => typeof ShadSpaceWASMLoader !== 'undefined', 
+                    required: true,
+                    message: 'WASM loader initialized'
+                },
+                { 
+                    name: 'Fetch API', 
+                    check: () => typeof fetch !== 'undefined', 
+                    required: true,
+                    message: 'Fetch API available'
+                }
+            ];
+
+            let allGood = true;
+            let html = '';
+
+            dependencies.forEach(dep => {
+                const isOk = dep.check();
+                const status = isOk ? '✅' : '❌';
+                const cssClass = isOk ? 'ok' : 'error';
+                
+                html += `<div class="dependency ${cssClass}">${status} ${dep.name}`;
+                if (isOk && dep.message) {
+                    html += ` - ${dep.message}`;
+                }
+                if (!isOk && dep.required) {
+                    html += ' <strong>(REQUIRED)</strong>';
+                    allGood = false;
+                }
+                html += '</div>';
+            });
+
+            depsEl.innerHTML = html;
+            return allGood;
+        }
+
+        // Load and initialize WASM
+        async function initializeWASM() {
+            if (!checkDependencies()) {
+                updateStatus('error', 'Missing required dependencies');
+                return false;
+            }
+
+            try {
+                updateStatus('loading', 'Loading WASM module...');
+                
+                // Load the WASM module
+                await window.ShadSpaceWASMLoader.loadWASM('shadspace.wasm');
+                
+                updateStatus('loading', 'WASM loaded, waiting for functions...');
+                
+                // Wait for Go to register the functions
+                await window.ShadSpaceWASMLoader.waitForFunctions();
+                
+                // Check if functions are available
+                if (!window.ShadSpaceSDK || typeof window.ShadSpaceSDK.init !== 'function') {
+                    throw new Error('WASM functions not registered');
+                }
+                
+                wasmReady = true;
+                updateStatus('loading', 'WASM ready, initializing SDK...');
+                updateDependencyStatus('WASM Functions', true, '✅ WASM functions registered');
+                
+                return true;
+                
+            } catch (error) {
+                console.error('Failed to initialize WASM:', error);
+                updateStatus('error', `WASM initialization failed: ${error.message}`);
+                updateDependencyStatus('WASM Functions', false, `❌ ${error.message}`);
+                return false;
+            }
+        }
+
+        // Initialize the SDK
+        async function initializeSDK() {
+            if (!wasmReady) {
+                updateStatus('error', 'WASM not ready');
+                return;
+            }
+
+            try {
+                sdk = new ShadSpaceSDK();
+                
+                // Set up event listeners
+                sdk.on('initialized', (data) => {
+                    updateStatus('initialized', 'SDK Initialized Successfully');
+                    updateNodeInfo(data);
+                    enableButtons();
+                });
+
+                sdk.on('error', (error) => {
+                    updateStatus('error', `Error: ${error.message || error}`);
+                });
+
+                sdk.on('upload:start', (data) => {
+                    logResult(`Upload started: ${data.fileName} (${data.size} bytes)`);
+                });
+
+                sdk.on('upload:complete', (data) => {
+                    logResult(`Upload completed: ${data.fileName}\nFile Hash: ${data.fileHash}`);
+                });
+
+                sdk.on('download:start', (data) => {
+                    logResult(`Download started for file: ${data.fileHash}`);
+                });
+
+                sdk.on('download:complete', (data) => {
+                    logResult(`Download completed: ${data.fileHash} (${data.size} bytes)`);
+                });
+
+                // Initialize with default config
+                updateStatus('loading', 'Connecting to network...');
+                await sdk.init({
+                    port: 4004,
+                    bootstrapPeers: [
+                        "/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWFgQMSugNGS6mW4drX2N5oQsAF7Jxa9CWgy8bAQaSHJaU"
+                    ]
+                });
+
+            } catch (error) {
+                updateStatus('error', `SDK initialization failed: ${error.message}`);
+                console.error('SDK initialization error:', error);
+            }
+        }
+
+        // File operations
+        async function uploadFile() {
+            const fileInput = document.getElementById('fileInput');
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                alert('Please select a file first');
+                return;
+            }
+
+            try {
+                await sdk.uploadFile(file, { total: 3, required: 2 });
+            } catch (error) {
+                logResult(`Upload failed: ${error.message}`);
+            }
+        }
+
+        async function downloadFile() {
+            const fileHashInput = document.getElementById('fileHashInput');
+            const fileHash = fileHashInput.value.trim();
+            
+            if (!fileHash) {
+                alert('Please enter a file hash');
+                return;
+            }
+
+            try {
+                const result = await sdk.downloadFile(fileHash, `downloaded-${fileHash.slice(0, 8)}.bin`);
+                logResult(`Download successful: ${fileHash}\nFile size: ${result.size} bytes`);
+            } catch (error) {
+                logResult(`Download failed: ${error.message}`);
+            }
+        }
+
+        async function listFiles() {
+            try {
+                const result = await sdk.listFiles();
+                let output = `Found ${result.count} files:\n\n`;
+                result.files.forEach((file, index) => {
+                    output += `${index + 1}. ${file.fileName}\n`;
+                    output += `   Hash: ${file.fileHash}\n`;
+                    output += `   Size: ${file.fileSize} bytes\n`;
+                    output += `   Shards: ${file.shards}/${file.required}\n`;
+                    output += `   Created: ${file.createdAt}\n\n`;
+                });
+                logResult(output);
+            } catch (error) {
+                logResult(`Failed to list files: ${error.message}`);
+            }
+        }
+
+        async function getNetworkStats() {
+            try {
+                const stats = await sdk.getNetworkStats();
+                logResult('Network Statistics:\n' + JSON.stringify(stats, null, 2));
+            } catch (error) {
+                logResult(`Failed to get network stats: ${error.message}`);
+            }
+        }
+
+        // UI helpers
+        function updateStatus(type, message) {
+            const statusEl = document.getElementById('status');
+            statusEl.className = `status ${type}`;
+            statusEl.textContent = message;
+        }
+
+        function updateDependencyStatus(name, isOk, message) {
+            const depsEl = document.getElementById('dependencies');
+            const newDep = `<div class="dependency ${isOk ? 'ok' : 'error'}">${message}</div>`;
+            depsEl.innerHTML += newDep;
+        }
+
+        function updateNodeInfo(info) {
+            const nodeInfoEl = document.getElementById('nodeInfo');
+            nodeInfoEl.innerHTML = `
+                <strong>Node ID:</strong> ${info.nodeId}<br>
+                <strong>Status:</strong> ${info.status}<br>
+                <strong>Peer ID:</strong> ${info.peerId}
+            `;
+        }
+
+        function enableButtons() {
+            document.getElementById('uploadBtn').disabled = false;
+            document.getElementById('listBtn').disabled = false;
+            document.getElementById('statsBtn').disabled = false;
+            document.getElementById('downloadBtn').disabled = false;
+        }
+
+        function logResult(message) {
+            const resultsEl = document.getElementById('results');
+            resultsEl.textContent = message;
+            console.log('SDK Result:', message);
+        }
+
+        // Initialize everything when page loads
+        window.addEventListener('load', async function() {
+            try {
+                // First initialize WASM
+                const wasmSuccess = await initializeWASM();
+                if (wasmSuccess) {
+                    // Then initialize the SDK
+                    await initializeSDK();
+                }
+            } catch (error) {
+                console.error('Initialization failed:', error);
+                updateStatus('error', `Initialization failed: ${error.message}`);
+            }
+        });
+    </script>
+</body>
+</html>
