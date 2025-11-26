@@ -1,1 +1,1 @@
-Hello my name is jimleston osoi
+go run ./cmd/master-node/main.go -key ./keys/custom_master_key_5.key -port 4005 -host 0.0.0.0 -bootstrap /ip4/127.0.0.1/tcp/4001/p2p/12D3KooWFgQMSugNGS6mW4drX2N5oQsAF7Jxa9CWgy8bAQaSHJaU

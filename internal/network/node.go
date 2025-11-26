@@ -119,6 +119,8 @@ func NewNode(ctx context.Context, config NodeConfig) (*Node, error) {
 	h.SetStreamHandler("/shadspace/file-metadata/1.0.0", node.handleFileMetadataRequest)
 	h.SetStreamHandler("/shadspace/file-shard/1.0.0", node.handleShardRequest)
 	h.SetStreamHandler("/shardspace/proof/1.0.0", node.handleProofVerificationStream)
+	h.SetStreamHandler("/shadspace/file-list/1.0.0", node.handleFileListRequest)
+	h.SetStreamHandler("/shadspace/storage/1.0.0", node.handleStorageProtocol)
 
 	// Set connection handlers
 	h.Network().Notify(&network.NotifyBundle{
@@ -220,6 +222,211 @@ func (n *Node) handleProofVerificationStream(s network.Stream) {
 	log.Printf("Received proof verification stream from %s", s.Conn().RemotePeer())
 	// The actual processing will be done by the registered stream handler
 	// in the ProofVerifier, which uses the same protocol ID
+}
+
+func (n *Node) handleFileListRequest(stream network.Stream) {
+	defer stream.Close()
+
+	// Decode request
+	var request types.FileListRequest
+	if err := n.codec.Decode(stream, &request); err != nil {
+		log.Printf("Failed to decode file list request: %v", err)
+		return
+	}
+
+	log.Printf("Received file list request from %s", stream.Conn().RemotePeer())
+
+	// Build response
+	response := types.FileListResponse{
+		FileIndex: make(map[string][]peer.ID),
+	}
+
+	n.mu.RLock()
+	fileStore := n.fileStore
+	n.mu.RUnlock()
+
+	if fileStore == nil {
+		response.Error = "file storage not available"
+	} else {
+		// Try to cast fileStore to get access to file list
+		if decentralizedNode, ok := fileStore.(*DecentralizedNode); ok {
+			localFiles := decentralizedNode.GetFileManager().ListFiles()
+
+			decentralizedNode.networkView.mu.RLock()
+			for _, file := range localFiles {
+				response.FileIndex[file.FileHash] = []peer.ID{decentralizedNode.GetPeerID()}
+			}
+			decentralizedNode.networkView.mu.RUnlock()
+
+			log.Printf("Sending file list with %d files to %s", len(localFiles), stream.Conn().RemotePeer())
+		} else {
+			response.Error = "file store does not support file listing"
+		}
+	}
+
+	// Send response
+	if err := n.codec.Encode(stream, response); err != nil {
+		log.Printf("Failed to send file list response: %v", err)
+	}
+}
+
+func (n *Node) handleStorageProtocol(stream network.Stream) {
+	defer stream.Close()
+
+	var request types.StorageRequest
+	if err := n.codec.Decode(stream, &request); err != nil {
+		log.Printf("Failed to decode storage request: %v", err)
+		return
+	}
+
+	log.Printf("Received storage request: %s for file %s shard %d",
+		request.Operation, request.FileHash, request.ShardIndex)
+
+	var response types.StorageResponse
+
+	switch request.Operation {
+	case "store_shard":
+		response = n.handleStoreShard(request, stream.Conn().RemotePeer())
+	default:
+		response.Error = fmt.Sprintf("unknown operation: %s", request.Operation)
+	}
+
+	if err := n.codec.Encode(stream, response); err != nil {
+		log.Printf("Failed to send storage response: %v", err)
+	}
+}
+
+// handleStoreShard stores a shard received from another peer
+func (n *Node) handleStoreShard(request types.StorageRequest, remotePeer peer.ID) types.StorageResponse {
+	n.mu.RLock()
+	fileStore := n.fileStore
+	n.mu.RUnlock()
+
+	if fileStore == nil {
+		return types.StorageResponse{
+			Success: false,
+			Error:   "file storage not available",
+		}
+	}
+
+	// Store the shard
+	shardID := fmt.Sprintf("%s_shard_%d", request.FileHash, request.ShardIndex)
+
+	if decentralizedNode, ok := fileStore.(*DecentralizedNode); ok {
+		// Store the shard data
+		if err := decentralizedNode.storage.StoreChunk(shardID, request.ShardData); err != nil {
+			log.Printf("Failed to store shard %s: %v", shardID, err)
+			return types.StorageResponse{
+				Success: false,
+				Error:   fmt.Sprintf("failed to store shard: %v", err),
+			}
+		}
+
+		// Update file metadata in the file manager
+		err := n.updateFileMetadata(decentralizedNode, request, remotePeer)
+		if err != nil {
+			log.Printf("Warning: failed to update file metadata: %v", err)
+			// Continue anyway since shard was stored successfully
+		}
+
+		log.Printf("✅ Stored shard %d for file %s from peer %s",
+			request.ShardIndex, request.FileHash, remotePeer)
+
+		return types.StorageResponse{
+			Success: true,
+			Message: "shard stored successfully",
+		}
+	}
+
+	return types.StorageResponse{
+		Success: false,
+		Error:   "invalid file store type",
+	}
+}
+
+// updateFileMetadata updates file metadata when receiving a shard
+func (n *Node) updateFileMetadata(decentralizedNode *DecentralizedNode, request types.StorageRequest, remotePeer peer.ID) error {
+	// Check if we already have metadata for this file
+	existingMetadata, err := decentralizedNode.fileManager.GetFileInfo(request.FileHash)
+	if err != nil {
+		// Create new file metadata since this is the first shard we're receiving
+		metadata := &storage.FileMetadata{
+			FileHash:       request.FileHash,
+			FileName:       request.FileName,
+			FileSize:       int64(len(request.ShardData) * request.TotalShards), // Estimate
+			TotalShards:    request.TotalShards,
+			RequiredShards: request.RequiredShards,
+			ShardHashes:    make([]string, request.TotalShards),
+			StoredPeers:    []peer.ID{decentralizedNode.GetPeerID()},
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
+			OriginalSize:   int64(len(request.ShardData) * request.TotalShards), // Estimate
+		}
+
+		// Calculate shard hash for this shard
+		shardHash := decentralizedNode.fileManager.GetShardManager().CalculateShardHash(request.ShardData)
+		if request.ShardIndex-1 < len(metadata.ShardHashes) {
+			metadata.ShardHashes[request.ShardIndex-1] = shardHash
+		}
+
+		// Use the public UpdateFileMetadata method
+		if err := decentralizedNode.fileManager.UpdateFileMetadata(metadata); err != nil {
+			return fmt.Errorf("failed to save metadata: %w", err)
+		}
+
+		log.Printf("Created new file metadata for %s with %d total shards", request.FileHash, request.TotalShards)
+	} else {
+		// Update existing metadata
+		existingMetadata.UpdatedAt = time.Now()
+
+		// Calculate shard hash for this shard
+		shardHash := decentralizedNode.fileManager.GetShardManager().CalculateShardHash(request.ShardData)
+		if request.ShardIndex-1 < len(existingMetadata.ShardHashes) {
+			existingMetadata.ShardHashes[request.ShardIndex-1] = shardHash
+		}
+
+		// Update the stored peers list if not already present
+		peerExists := false
+		for _, p := range existingMetadata.StoredPeers {
+			if p == decentralizedNode.GetPeerID() {
+				peerExists = true
+				break
+			}
+		}
+		if !peerExists {
+			existingMetadata.StoredPeers = append(existingMetadata.StoredPeers, decentralizedNode.GetPeerID())
+		}
+
+		// Use the public UpdateFileMetadata method
+		if err := decentralizedNode.fileManager.UpdateFileMetadata(existingMetadata); err != nil {
+			return fmt.Errorf("failed to save updated metadata: %w", err)
+		}
+
+		log.Printf("Updated file metadata for %s", request.FileHash)
+	}
+
+	// Update network view
+	decentralizedNode.networkView.mu.Lock()
+	defer decentralizedNode.networkView.mu.Unlock()
+
+	if _, exists := decentralizedNode.networkView.fileIndex[request.FileHash]; !exists {
+		decentralizedNode.networkView.fileIndex[request.FileHash] = []peer.ID{decentralizedNode.GetPeerID()}
+	} else {
+		// Add this peer to the existing file entry if not already present
+		peers := decentralizedNode.networkView.fileIndex[request.FileHash]
+		found := false
+		for _, peer := range peers {
+			if peer == decentralizedNode.GetPeerID() {
+				found = true
+				break
+			}
+		}
+		if !found {
+			decentralizedNode.networkView.fileIndex[request.FileHash] = append(peers, decentralizedNode.GetPeerID())
+		}
+	}
+
+	return nil
 }
 
 // bootstrap connects the node to bootstrap peers and initializes the DHT

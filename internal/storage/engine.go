@@ -77,6 +77,12 @@ func (e *Engine) StoreChunk(chunkID string, data []byte) error {
 	// create chunk file path
 	chunkPath := filepath.Join(e.storageDir, chunkID+".chunk")
 
+	// Create directory if it doesn't exist
+	chunkDir := filepath.Dir(chunkPath)
+	if err := os.MkdirAll(chunkDir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory %s: %w", chunkDir, err)
+	}
+
 	// Write data to disk
 	if err := os.WriteFile(chunkPath, data, 0644); err != nil {
 		return fmt.Errorf("failed to write chunk to disk: %w", err)

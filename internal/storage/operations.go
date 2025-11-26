@@ -168,6 +168,11 @@ func (fm *FileManager) RetrieveFile(fileHash string) ([]byte, error) {
 		return nil, fmt.Errorf("file not found: %s", fileHash)
 	}
 
+	// Check if this is a metadata-only file (no local shards)
+	if len(metadata.ShardHashes) == 0 {
+		return nil, fmt.Errorf("file %s is metadata-only, shards are stored remotely", fileHash)
+	}
+
 	// Retrieve shards from persistent storage
 	shards := make([]Shard, 0, metadata.TotalShards)
 	shardsRetrieved := 0
@@ -428,4 +433,85 @@ func (fm *FileManager) Close() error {
 	// The engine handles its own cleanup
 	// We could add additional cleanup here if needed
 	return nil
+}
+
+// UpdateFileMetadata updates file metadata (for external use)
+func (fm *FileManager) UpdateFileMetadata(metadata *FileMetadata) error {
+	fm.mu.Lock()
+	defer fm.mu.Unlock()
+
+	fm.fileIndex[metadata.FileHash] = metadata
+	return fm.saveMetadata()
+}
+
+// GetFileMetadataInternal returns the internal file metadata (for network operations)
+func (fm *FileManager) GetFileMetadataInternal(fileHash string) (*FileMetadata, bool) {
+	fm.mu.RLock()
+	defer fm.mu.RUnlock()
+
+	metadata, exists := fm.fileIndex[fileHash]
+	return metadata, exists
+}
+
+// GetFileMetadata returns a copy of the file metadata (for external use)
+func (fm *FileManager) GetFileMetadata(fileHash string) (*FileMetadata, bool) {
+	fm.mu.RLock()
+	defer fm.mu.RUnlock()
+
+	metadata, exists := fm.fileIndex[fileHash]
+	if !exists {
+		return nil, false
+	}
+
+	// Return a copy to prevent external modifications
+	copiedMetadata := *metadata
+	return &copiedMetadata, true
+}
+
+func (fm *FileManager) StoreFileMetadata(fileName string, data []byte, totalShards, requiredShards int, storagePeers []peer.ID) (string, error) {
+	if len(data) == 0 {
+		return "", fmt.Errorf("cannot store empty file")
+	}
+
+	if requiredShards > totalShards {
+		return "", fmt.Errorf("required shards cannot exceed total shards")
+	}
+
+	// Calculate file hash
+	fileHash := fm.CalculateFileHash(data)
+
+	fm.mu.Lock()
+	defer fm.mu.Unlock()
+
+	// Check if file already exists
+	if _, exists := fm.fileIndex[fileHash]; exists {
+		return fileHash, fmt.Errorf("file already exists with hash: %s", fileHash)
+	}
+
+	// Store file metadata only (no shards)
+	metadata := &FileMetadata{
+		FileHash:       fileHash,
+		FileName:       fileName,
+		FileSize:       int64(len(data)),
+		TotalShards:    totalShards,
+		RequiredShards: requiredShards,
+		StoredPeers:    storagePeers,
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+		OriginalSize:   int64(len(data)),
+		ShardHashes:    make([]string, 0), // Empty since we're not storing shards
+	}
+
+	// Update file index
+	fm.fileIndex[fileHash] = metadata
+
+	// Save metadata to disk
+	if err := fm.saveMetadata(); err != nil {
+		delete(fm.fileIndex, fileHash)
+		return "", fmt.Errorf("failed to save file metadata: %w", err)
+	}
+
+	log.Printf("File metadata %s stored locally (shards stored on %d remote peers)",
+		fileHash, len(storagePeers))
+	return fileHash, nil
 }

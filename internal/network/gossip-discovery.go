@@ -91,6 +91,8 @@ func (gm *GossipManager) handleGossipMessage(msg *pubsub.Message) {
 		gm.handleNodeInfoMessage(gossipMsg)
 	case types.GossipTypeFileAnnounce:
 		gm.handleFileAnnounceMessage(gossipMsg)
+	case types.GossipTypeFileDelete:
+		gm.handleFileDeleteMessage(gossipMsg)
 	case types.GossipTypeValidatorUpdate:
 		gm.handleValidatorUpdateMessage(gossipMsg)
 		// case types.GossipTypeReputationUpdate:

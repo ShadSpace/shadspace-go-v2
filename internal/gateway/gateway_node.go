@@ -51,6 +51,18 @@ func NewGatewayNode(ctx context.Context, config network.NodeConfig, apiPort int)
 		return nil, fmt.Errorf("failed to create decentralized node: %w", err)
 	}
 
+	time.Sleep(3 * time.Second)
+
+	// Verify file manager is ready
+	if decentralizedNode.GetFileManager() == nil {
+		cancel()
+		return nil, fmt.Errorf("file manager not initialized")
+	}
+
+	// Test file access
+	files := decentralizedNode.GetFileManager().ListFiles()
+	log.Printf("GatewayNode: Initial file scan found %d files", len(files))
+
 	// Create gateway info
 	gatewayInfo := &types.GatewayInfo{
 		PeerID:    decentralizedNode.GetPeerID(),
@@ -161,7 +173,16 @@ func (gn *GatewayNode) GetStorageStats() map[string]interface{} {
 // StoreFile stores a file through the gateway
 func (gn *GatewayNode) StoreFile(filename string, data []byte, totalShards, requiredShards int) (string, error) {
 	gn.gatewayInfo.TotalRequests++
-	return gn.node.GetStorageOperations().StoreFileDistributed(filename, data, totalShards, requiredShards)
+
+	// Try distributed storage first
+	fileHash, err := gn.node.GetStorageOperations().StoreFileDistributed(filename, data, totalShards, requiredShards)
+	if err != nil {
+		log.Printf("Distributed storage failed: %v", err)
+	} else {
+		log.Printf("✅ File stored distributed across network")
+	}
+
+	return fileHash, nil
 }
 
 // RetrieveFile retrieves a file through the gateway

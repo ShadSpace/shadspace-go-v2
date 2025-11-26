@@ -109,14 +109,6 @@ func testFileUpload(node *network.DecentralizedNode, filePath string) {
 	fileHash, err := node.GetStorageOperations().StoreFileDistributed(fileName, data, 3, 2)
 	if err != nil {
 		log.Printf("Distributed storage failed: %v", err)
-		log.Printf("Trying local storage as fallback...")
-
-		// Fallback to local storage
-		fileHash, err = node.GetFileManager().StoreFile(fileName, data, 3, 2, nil)
-		if err != nil {
-			log.Fatalf("Local storage also failed: %v", err)
-		}
-		log.Printf("✅ File stored locally (no suitable network peers available)")
 	} else {
 		log.Printf("✅ File stored distributed across network")
 	}

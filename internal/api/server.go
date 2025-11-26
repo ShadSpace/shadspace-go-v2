@@ -236,6 +236,7 @@ func (a *APIServer) filesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	files := a.gateway.GetFileList()
+	log.Printf("Retrieved %d files from gateway", len(files))
 	fileInfos := make([]map[string]interface{}, len(files))
 
 	for i, file := range files {

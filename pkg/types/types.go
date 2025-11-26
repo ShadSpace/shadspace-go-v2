@@ -217,9 +217,10 @@ func (fd *FileDeleteMessage) ToJSON() (json.RawMessage, error) {
 }
 
 type FileAnnounceMessage struct {
-	FileHash  string         `json:"file_hash"`
-	Locations []FileLocation `json:"locations"`
-	Timestamp time.Time      `json:"timestamp"`
+	FileHash   string         `json:"file_hash"`
+	Locations  []FileLocation `json:"locations"`
+	Timestamp  time.Time      `json:"timestamp"`
+	SourcePeer peer.ID        `json:"source_peer"`
 }
 
 type FileDeleteMessage struct {
@@ -229,10 +230,13 @@ type FileDeleteMessage struct {
 }
 
 type FileLocation struct {
-	FileHash    string    `json:"file_hash"`
-	ShardHashes []string  `json:"shard_hashes,omitempty"`
-	PeerIDs     []peer.ID `json:"peer_ids"`
-	Timestamp   time.Time `json:"timestamp"`
+	FileHash       string    `json:"file_hash"`
+	ShardHashes    []string  `json:"shard_hashes,omitempty"`
+	PeerIDs        []peer.ID `json:"peer_ids"`
+	Timestamp      time.Time `json:"timestamp"`
+	FileSize       int64     `json:"file_size"`
+	TotalShards    int       `json:"total_shards"`
+	RequiredShards int       `json:"required_shards"`
 }
 
 type FileMetadataRequest struct {
@@ -242,6 +246,15 @@ type FileMetadataRequest struct {
 type FileMetadataResponse struct {
 	Metadata *storage.FileMetadata `json:"metadata,omitempty"`
 	Error    string                `json:"error,omitempty"`
+}
+
+type FileListRequest struct {
+	Since time.Time `json:"since"`
+}
+
+type FileListResponse struct {
+	FileIndex map[string][]peer.ID `json:"file_index"`
+	Error     string               `json:"error,omitempty"`
 }
 
 // Shard request/response
@@ -300,4 +313,24 @@ type NodeInfo struct {
 	LastSeen        time.Time `json:"last_seen"`
 	Addresses       []string  `json:"addresses,omitempty"`
 	Tags            []string  `json:"tags,omitempty"`
+}
+
+// StorageRequest represents a request to store or retrieve data
+type StorageRequest struct {
+	Operation      string    `json:"operation"` // "store_shard", "retrieve_shard"
+	FileHash       string    `json:"file_hash"`
+	FileName       string    `json:"file_name"`
+	ShardIndex     int       `json:"shard_index"`
+	ShardData      []byte    `json:"shard_data,omitempty"`
+	TotalShards    int       `json:"total_shards"`
+	RequiredShards int       `json:"required_shards"`
+	Timestamp      time.Time `json:"timestamp"`
+}
+
+// StorageResponse represents a response to a storage request
+type StorageResponse struct {
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
+	Message string `json:"message,omitempty"`
+	Data    []byte `json:"data,omitempty"`
 }
